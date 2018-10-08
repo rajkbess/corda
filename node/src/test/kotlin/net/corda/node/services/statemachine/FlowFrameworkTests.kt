@@ -68,7 +68,7 @@ class FlowFrameworkTests {
     @Before
     fun setUpMockNet() {
         mockNet = InternalMockNetwork(
-                cordappsForAllNodes = cordappsForPackages("net.corda.finance.contracts", "net.corda.testing.contracts"),
+                cordappsForAllNodes = cordappsForPackages("net.corda.testing.contracts") + FINANCE_CORDAPP,
                 servicePeerAllocationStrategy = RoundRobin()
         )
 
@@ -901,7 +901,7 @@ private object WaitingFlows {
         override fun call(): SignedTransaction {
             val otherPartySession = initiateFlow(otherParty)
             otherPartySession.send(stx)
-            return waitForLedgerCommit(stx.id)
+            return subFlow(ReceiveFinalityFlow(otherPartySession, expectedTxId = stx.id))
         }
     }
 
@@ -910,7 +910,7 @@ private object WaitingFlows {
         override fun call(): SignedTransaction {
             val stx = otherPartySession.receive<SignedTransaction>().unwrap { it }
             if (throwException != null) throw throwException.invoke()
-            return subFlow(FinalityFlow(stx, setOf(otherPartySession.counterparty)))
+            return subFlow(FinalityFlow(stx, otherPartySession))
         }
     }
 }
@@ -1015,7 +1015,7 @@ private class VaultQueryFlow(val stx: SignedTransaction, val otherParty: Party) 
         // hold onto reference here to force checkpoint of vaultService and thus
         // prove it is registered as a tokenizableService in the node
         val vaultQuerySvc = serviceHub.vaultService
-        waitForLedgerCommit(stx.id)
+        subFlow(ReceiveFinalityFlow(otherPartySession, expectedTxId = stx.id))
         return vaultQuerySvc.queryBy<ContractState>().states
     }
 }
