@@ -53,7 +53,7 @@ open class SerializerFactory(
         val whitelist: ClassWhitelist,
         val classCarpenter: ClassCarpenter,
         private val evolutionSerializerProvider: EvolutionSerializerProvider = DefaultEvolutionSerializerProvider,
-        val fingerPrinterConstructor: (SerializerFactory) -> FingerPrinter = ::SerializerFingerPrinter,
+        val fingerPrinterConstructor: (SerializerFactory) -> FingerPrinter = ::getTypeModellingFingerPrinter,
         private val serializersByType: MutableMap<Type, AMQPSerializer<Any>>,
         val serializersByDescriptor: MutableMap<Any, AMQPSerializer<Any>>,
         private val customSerializers: MutableList<SerializerFor>,
@@ -65,7 +65,7 @@ open class SerializerFactory(
     constructor(whitelist: ClassWhitelist,
                 classCarpenter: ClassCarpenter,
                 evolutionSerializerProvider: EvolutionSerializerProvider = DefaultEvolutionSerializerProvider,
-                fingerPrinterConstructor: (SerializerFactory) -> FingerPrinter = ::SerializerFingerPrinter,
+                fingerPrinterConstructor: (SerializerFactory) -> FingerPrinter = ::getTypeModellingFingerPrinter,
                 onlyCustomSerializers: Boolean = false
     ) : this(
             whitelist,
@@ -85,7 +85,7 @@ open class SerializerFactory(
                 carpenterClassLoader: ClassLoader,
                 lenientCarpenter: Boolean = false,
                 evolutionSerializerProvider: EvolutionSerializerProvider = DefaultEvolutionSerializerProvider,
-                fingerPrinterConstructor: (SerializerFactory) -> FingerPrinter = ::SerializerFingerPrinter,
+                fingerPrinterConstructor: (SerializerFactory) -> FingerPrinter = ::getTypeModellingFingerPrinter,
                 onlyCustomSerializers: Boolean = false
     ) : this(
             whitelist,
