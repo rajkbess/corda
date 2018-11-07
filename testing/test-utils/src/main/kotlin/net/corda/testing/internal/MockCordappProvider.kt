@@ -59,17 +59,19 @@ class MockCordappProvider(
         }
     }
 
-    private fun fakeAttachment(value: String): ByteArray =
-            ByteArrayOutputStream().use { baos ->
-                JarOutputStream(baos).use { jos ->
-                    jos.putNextEntry(ZipEntry(value))
-                    jos.writer().apply {
-                        append(value)
-                        flush()
-                    }
-                    jos.closeEntry()
+    private val attachmentsCache = mutableMapOf<String, ByteArray>()
+    private fun fakeAttachment(value: String): ByteArray = attachmentsCache.computeIfAbsent(value){
+        ByteArrayOutputStream().use { baos ->
+            JarOutputStream(baos).use { jos ->
+                jos.putNextEntry(ZipEntry(value))
+                jos.writer().apply {
+                    append(value)
+                    flush()
                 }
-                baos.toByteArray()
+                jos.closeEntry()
             }
+            baos.toByteArray()
+        }
+    }
 
 }
