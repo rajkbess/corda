@@ -47,7 +47,7 @@ abstract class OnLedgerAsset<T : Any, out C : CommandData, S : FungibleAsset<T>>
          * party.
          * @param deriveState a function to derive an output state based on an input state, amount for the output
          * and public key to pay to.
-         * @return A [Pair] of the same transaction builder passed in as [tx], and the list of keys that need to sign
+         * Returns a [Pair] of the same transaction builder passed in as [tx], and the list of keys that need to sign
          *         the resulting transaction for it to be valid.
          * @throws InsufficientBalanceException when a cash spending transaction fails because
          *         there is insufficient quantity for a given currency (and optionally set of Issuer Parties).
@@ -81,7 +81,7 @@ abstract class OnLedgerAsset<T : Any, out C : CommandData, S : FungibleAsset<T>>
          * and public key to pay to.
          * @param T A type representing a token
          * @param S A fungible asset state type
-         * @return A [Pair] of the same transaction builder passed in as [tx], and the list of keys that need to sign
+         * Returns a [Pair] of the same transaction builder passed in as [tx], and the list of keys that need to sign
          *         the resulting transaction for it to be valid.
          * @throws InsufficientBalanceException when a cash spending transaction fails because
          *         there is insufficient quantity for a given currency (and optionally set of Issuer Parties).
@@ -223,7 +223,7 @@ abstract class OnLedgerAsset<T : Any, out C : CommandData, S : FungibleAsset<T>>
          * @param amountIssued the amount to be exited, represented as a quantity of issued currency.
          * @param assetStates the asset states to take funds from. No checks are done about ownership of these states, it is
          * the responsibility of the caller to check that they do not attempt to exit funds held by others.
-         * @return the public keys which must sign the transaction for it to be valid.
+         * Returns the public keys which must sign the transaction for it to be valid.
          */
         @Throws(InsufficientBalanceException::class)
         @JvmStatic
@@ -246,7 +246,7 @@ abstract class OnLedgerAsset<T : Any, out C : CommandData, S : FungibleAsset<T>>
          * the responsibility of the caller to check that they do not attempt to exit funds held by others.
          * @param payChangeTo party to pay any change to; this is normally a confidential identity of the calling
          * party.
-         * @return the public keys which must sign the transaction for it to be valid.
+         * Returns the public keys which must sign the transaction for it to be valid.
          */
         @Throws(InsufficientBalanceException::class)
         @JvmStatic
@@ -316,7 +316,7 @@ abstract class OnLedgerAsset<T : Any, out C : CommandData, S : FungibleAsset<T>>
      * @param amountIssued the amount to be exited, represented as a quantity of issued currency.
      * @param assetStates the asset states to take funds from. No checks are done about ownership of these states, it is
      * the responsibility of the caller to check that they do not exit funds held by others.
-     * @return the public keys which must sign the transaction for it to be valid.
+     * Returns the public keys which must sign the transaction for it to be valid.
      */
     @Throws(InsufficientBalanceException::class)
     @Deprecated("Replaced with generateExit() which takes in a party to pay change to")
@@ -341,7 +341,7 @@ abstract class OnLedgerAsset<T : Any, out C : CommandData, S : FungibleAsset<T>>
      * @param amountIssued the amount to be exited, represented as a quantity of issued currency.
      * @param assetStates the asset states to take funds from. No checks are done about ownership of these states, it is
      * the responsibility of the caller to check that they do not exit funds held by others.
-     * @return the public keys which must sign the transaction for it to be valid.
+     * Returns the public keys which must sign the transaction for it to be valid.
      */
     @Throws(InsufficientBalanceException::class)
     fun generateExit(tx: TransactionBuilder, amountIssued: Amount<Issued<T>>,

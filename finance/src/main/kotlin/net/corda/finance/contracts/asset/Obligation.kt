@@ -514,7 +514,7 @@ class Obligation<P : Any> : Contract {
      * @param amountIssued the amount to be exited, represented as a quantity of issued currency.
      * @param assetStates the asset states to take funds from. No checks are done about ownership of these states, it is
      * the responsibility of the caller to check that they do not exit funds held by others.
-     * @return the public keys which must sign the transaction for it to be valid.
+     * Returns the [PublicKey]s which must sign the transaction for it to be valid.
      */
     @Suppress("unused")
     fun generateExit(tx: TransactionBuilder, amountIssued: Amount<Issued<Terms<P>>>,
@@ -723,7 +723,7 @@ class Obligation<P : Any> : Contract {
 /**
  * Convert a list of settlement states into total from each obligor to a beneficiary.
  *
- * @return a map of obligor/beneficiary pairs to the balance due.
+ * Returns a map of obligor/beneficiary pairs to the balance due.
  */
 fun <P : Any> extractAmountsDue(product: Obligation.Terms<P>, states: Iterable<Obligation.State<P>>): Map<Pair<AbstractParty, AbstractParty>, Amount<Obligation.Terms<P>>> {
     val balances = HashMap<Pair<AbstractParty, AbstractParty>, Amount<Obligation.Terms<P>>>()

@@ -18,7 +18,7 @@ abstract class ExchangeRate {
     /**
      * Convert the given amount of a currency into the target currency.
      *
-     * @return the original amount converted to an amount in the target currency.
+     * Returns the original amount converted to an amount in the target currency.
      */
     fun exchangeAmount(amount: Amount<Currency>, to: Currency) = Amount.fromDecimal(amount.toDecimal().multiply(rate(amount.token, to)), to)
 

@@ -65,7 +65,7 @@ class PartialMerkleTree(val root: PartialTree) {
         /**
          * @param merkleRoot Root of full Merkle tree.
          * @param includeHashes Hashes that should be included in a partial tree.
-         * @return Partial Merkle tree root.
+         * Returns the root of this [PartialMerkleTree].
          */
         @Throws(IllegalArgumentException::class, MerkleTreeException::class)
         fun build(merkleRoot: MerkleTree, includeHashes: List<SecureHash>): PartialMerkleTree {
@@ -96,7 +96,7 @@ class PartialMerkleTree(val root: PartialTree) {
          * @param root Root of full Merkle tree which is a base for a partial one.
          * @param includeHashes Hashes of leaves to be included in this partial tree.
          * @param usedHashes Hashes actually used to build this partial tree.
-         * @return Pair, first element indicates if in a subtree there is a leaf that is included in that partial tree.
+         * Returns a [Pair], where its first element indicates if in a subtree there is a leaf that is included in that partial tree.
          * Second element refers to that subtree.
          */
         private fun buildPartialTree(
@@ -131,7 +131,7 @@ class PartialMerkleTree(val root: PartialTree) {
          * Modifies usedHashes to later check for inclusion with hashes provided.
          * @param node the partial Merkle tree for which we want to calculate the Merkle root.
          * @param usedHashes a mutable list that at the end of this recursive algorithm, it will consist of the included leaves (hashes of the visible components).
-         * @return the root [SecureHash] of this partial Merkle tree.
+         * Returns the root [SecureHash] of this partial Merkle tree.
          */
         fun rootAndUsedHashes(node: PartialTree, usedHashes: MutableList<SecureHash>): SecureHash {
             return when (node) {
@@ -166,7 +166,7 @@ class PartialMerkleTree(val root: PartialTree) {
     /**
      * Method to return the index of the input leaf in the partial Merkle tree structure.
      * @param leaf the component hash to check.
-     * @return leaf-index of this component (starting from zero).
+     * Returns the leaf-index of this component (left to right and starting from zero).
      * @throws MerkleTreeException if the provided hash is not in the tree.
      */
     @Throws(MerkleTreeException::class)

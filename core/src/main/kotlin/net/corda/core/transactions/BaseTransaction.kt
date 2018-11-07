@@ -71,7 +71,7 @@ abstract class BaseTransaction : NamedByHash {
     /**
      * Helper to simplify getting an indexed output.
      * @param index the position of the item in the output.
-     * @return The ContractState at the requested index
+     * Returns the [ContractState] at the requested index.
      */
     fun getOutput(index: Int): ContractState = outputs[index].data
 
@@ -79,7 +79,7 @@ abstract class BaseTransaction : NamedByHash {
      * Helper to simplify getting all output states of a particular class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * Clazz must be an extension of [ContractState].
-     * @return the possibly empty list of output states matching the clazz restriction.
+     * Returns the possibly empty list of output states matching the [clazz] restriction.
      */
     fun <T : ContractState> outputsOfType(clazz: Class<T>): List<T> = outputs.mapNotNull { clazz.castIfPossible(it.data) }
 
@@ -91,7 +91,7 @@ abstract class BaseTransaction : NamedByHash {
      * Clazz must be an extension of [ContractState].
      * @param predicate A filtering function taking a state of type T and returning true if it should be included in the list.
      * The class filtering is applied before the predicate.
-     * @return the possibly empty list of output states matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of output states matching the predicate and [clazz] restrictions.
      */
     fun <T : ContractState> filterOutputs(clazz: Class<T>, predicate: Predicate<T>): List<T> {
         return outputsOfType(clazz).filter { predicate.test(it) }
@@ -107,7 +107,7 @@ abstract class BaseTransaction : NamedByHash {
      * Clazz must be an extension of [ContractState].
      * @param predicate A filtering function taking a state of type T and returning true if this is the desired item.
      * The class filtering is applied before the predicate.
-     * @return the single item matching the predicate.
+     * Returns the single item matching the predicate.
      * @throws IllegalArgumentException if no item, or multiple items are found matching the requirements.
      */
     fun <T : ContractState> findOutput(clazz: Class<T>, predicate: Predicate<T>): T {
@@ -122,7 +122,7 @@ abstract class BaseTransaction : NamedByHash {
      * Helper to simplify getting all output [StateAndRef] items of a particular state class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * Clazz must be an extension of [ContractState].
-     * @return the possibly empty list of output [StateAndRef<T>] states matching the clazz restriction.
+     * Returns the possibly empty list of output [StateAndRef<T>] states matching the [clazz] restriction.
      */
     fun <T : ContractState> outRefsOfType(clazz: Class<T>): List<StateAndRef<T>> {
         return outputs.mapIndexedNotNull { index, state ->
@@ -138,7 +138,7 @@ abstract class BaseTransaction : NamedByHash {
      * Clazz must be an extension of [ContractState].
      * @param predicate A filtering function taking a state of type T and returning true if it should be included in the list.
      * The class filtering is applied before the predicate.
-     * @return the possibly empty list of output [StateAndRef] states matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of output [StateAndRef] states matching the predicate and [clazz] restrictions.
      */
     fun <T : ContractState> filterOutRefs(clazz: Class<T>, predicate: Predicate<T>): List<StateAndRef<T>> {
         return outRefsOfType(clazz).filter { predicate.test(it.state.data) }
@@ -154,7 +154,7 @@ abstract class BaseTransaction : NamedByHash {
      * Clazz must be an extension of [ContractState].
      * @param predicate A filtering function taking a state of type T and returning true if this is the desired item.
      * The class filtering is applied before the predicate.
-     * @return the single [StateAndRef] item matching the predicate.
+     * Returns the single [StateAndRef] item matching the predicate.
      * @throws IllegalArgumentException if no item, or multiple items are found matching the requirements.
      */
     fun <T : ContractState> findOutRef(clazz: Class<T>, predicate: Predicate<T>): StateAndRef<T> {

@@ -45,7 +45,7 @@ open class DigitalSignature(bytes: ByteArray) : OpaqueBytes(bytes) {
          * @throws InvalidKeyException if the key to verify the signature with is not valid (i.e. wrong key type for the
          * signature).
          * @throws SignatureException if the signature is invalid (i.e. damaged).
-         * @return whether the signature is correct for this key.
+         * Returns whether the signature is correct for this key.
          */
         @Throws(InvalidKeyException::class, SignatureException::class)
         fun isValid(content: ByteArray): Boolean = by.isValid(content, this)

@@ -106,7 +106,7 @@ open class TransactionBuilder @JvmOverloads constructor(
      * Generates a [WireTransaction] from this builder and resolves any [AutomaticHashConstraint] on contracts to
      * [HashAttachmentConstraint].
      *
-     * @returns A new [WireTransaction] that will be unaffected by further changes to this [TransactionBuilder].
+     * Returns a new [WireTransaction] that will be unaffected by further changes to this [TransactionBuilder].
      *
      * @throws ZoneVersionTooLowException if there are reference states and the zone minimum platform version is less than 4.
      */

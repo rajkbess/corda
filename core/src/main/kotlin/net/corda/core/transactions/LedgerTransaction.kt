@@ -81,7 +81,7 @@ data class LedgerTransaction @JvmOverloads constructor(
     /**
      * Returns the typed input StateAndRef at the specified index
      * @param index The index into the inputs.
-     * @return The [StateAndRef]
+     * Returns the [StateAndRef].
      */
     fun <T : ContractState> inRef(index: Int): StateAndRef<T> = uncheckedCast(inputs[index])
 
@@ -356,14 +356,14 @@ data class LedgerTransaction @JvmOverloads constructor(
     /**
      * Helper to simplify getting an indexed input [ContractState].
      * @param index the position of the item in the inputs.
-     * @return The [StateAndRef] at the requested index
+     * Returns the [StateAndRef] at the requested index.
      */
     fun getInput(index: Int): ContractState = inputs[index].state.data
 
     /**
      * Helper to simplify getting an indexed reference input [ContractState].
      * @param index the position of the item in the references.
-     * @return The [StateAndRef] at the requested index.
+     * Returns the [StateAndRef] at the requested index.
      */
     fun getReferenceInput(index: Int): ContractState = references[index].state.data
 
@@ -371,7 +371,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * Helper to simplify getting all inputs states of a particular class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [ContractState].
-     * @return the possibly empty list of inputs matching the clazz restriction.
+     * Returns the possibly empty list of inputs matching the clazz restriction.
      */
     fun <T : ContractState> inputsOfType(clazz: Class<T>): List<T> = inputs.mapNotNull { clazz.castIfPossible(it.state.data) }
 
@@ -381,7 +381,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * Helper to simplify getting all reference input states of a particular class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [ContractState].
-     * @return the possibly empty list of inputs matching the clazz restriction.
+     * Returns the possibly empty list of inputs matching the clazz restriction.
      */
     fun <T : ContractState> referenceInputsOfType(clazz: Class<T>): List<T> = references.mapNotNull { clazz.castIfPossible(it.state.data) }
 
@@ -391,7 +391,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * Helper to simplify getting all inputs states of a particular class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [ContractState].
-     * @return the possibly empty list of inputs [StateAndRef] matching the clazz restriction.
+     * Returns the possibly empty list of inputs [StateAndRef] matching the [clazz] restriction.
      */
     fun <T : ContractState> inRefsOfType(clazz: Class<T>): List<StateAndRef<T>> {
         return inputs.mapNotNull { if (clazz.isInstance(it.state.data)) uncheckedCast<StateAndRef<ContractState>, StateAndRef<T>>(it) else null }
@@ -403,7 +403,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * Helper to simplify getting all reference input states of a particular class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [ContractState].
-     * @return the possibly empty list of reference inputs [StateAndRef] matching the clazz restriction.
+     * Returns the possibly empty list of reference inputs [StateAndRef] matching the [clazz] restriction.
      */
     fun <T : ContractState> referenceInputRefsOfType(clazz: Class<T>): List<StateAndRef<T>> {
         return references.mapNotNull { if (clazz.isInstance(it.state.data)) uncheckedCast<StateAndRef<ContractState>, StateAndRef<T>>(it) else null }
@@ -417,7 +417,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of [ContractState].
      * @param predicate A filtering function taking a state of type T and returning true if it should be included in the list.
      * The class filtering is applied before the predicate.
-     * @return the possibly empty list of input states matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of input states matching the predicate and [clazz] restrictions.
      */
     fun <T : ContractState> filterInputs(clazz: Class<T>, predicate: Predicate<T>): List<T> {
         return inputsOfType(clazz).filter { predicate.test(it) }
@@ -433,7 +433,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of [ContractState].
      * @param predicate A filtering function taking a state of type T and returning true if it should be included in the list.
      * The class filtering is applied before the predicate.
-     * @return the possibly empty list of reference states matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of reference states matching the predicate and [clazz] restrictions.
      */
     fun <T : ContractState> filterReferenceInputs(clazz: Class<T>, predicate: Predicate<T>): List<T> {
         return referenceInputsOfType(clazz).filter { predicate.test(it) }
@@ -449,7 +449,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * The class filtering is applied before the predicate.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [ContractState].
-     * @return the possibly empty list of inputs [StateAndRef] matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of inputs [StateAndRef] matching the predicate and [clazz] restrictions.
      */
     fun <T : ContractState> filterInRefs(clazz: Class<T>, predicate: Predicate<T>): List<StateAndRef<T>> {
         return inRefsOfType(clazz).filter { predicate.test(it.state.data) }
@@ -465,7 +465,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * The class filtering is applied before the predicate.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [ContractState].
-     * @return the possibly empty list of references [StateAndRef] matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of references [StateAndRef] matching the predicate and [clazz] restrictions.
      */
     fun <T : ContractState> filterReferenceInputRefs(clazz: Class<T>, predicate: Predicate<T>): List<StateAndRef<T>> {
         return referenceInputRefsOfType(clazz).filter { predicate.test(it.state.data) }
@@ -481,7 +481,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of ContractState.
      * @param predicate A filtering function taking a state of type T and returning true if this is the desired item.
      * The class filtering is applied before the predicate.
-     * @return the single item matching the predicate.
+     * Returns the single item matching the predicate.
      * @throws IllegalArgumentException if no item, or multiple items are found matching the requirements.
      */
     fun <T : ContractState> findInput(clazz: Class<T>, predicate: Predicate<T>): T {
@@ -498,7 +498,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of ContractState.
      * @param predicate A filtering function taking a state of type T and returning true if this is the desired item.
      * The class filtering is applied before the predicate.
-     * @return the single item matching the predicate.
+     * Returns the single item matching the predicate.
      * @throws IllegalArgumentException if no item, or multiple items are found matching the requirements.
      */
     fun <T : ContractState> findReference(clazz: Class<T>, predicate: Predicate<T>): T {
@@ -515,7 +515,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of ContractState.
      * @param predicate A filtering function taking a state of type T and returning true if this is the desired item.
      * The class filtering is applied before the predicate.
-     * @return the single item matching the predicate.
+     * Returns the single item matching the predicate.
      * @throws IllegalArgumentException if no item, or multiple items are found matching the requirements.
      */
     fun <T : ContractState> findInRef(clazz: Class<T>, predicate: Predicate<T>): StateAndRef<T> {
@@ -532,7 +532,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of ContractState.
      * @param predicate A filtering function taking a state of type T and returning true if this is the desired item.
      * The class filtering is applied before the predicate.
-     * @return the single item matching the predicate.
+     * Returns the single item matching the predicate.
      * @throws IllegalArgumentException if no item, or multiple items are found matching the requirements.
      */
     fun <T : ContractState> findReferenceInputRef(clazz: Class<T>, predicate: Predicate<T>): StateAndRef<T> {
@@ -546,7 +546,7 @@ data class LedgerTransaction @JvmOverloads constructor(
     /**
      * Helper to simplify getting an indexed command.
      * @param index the position of the item in the commands.
-     * @return The Command at the requested index
+     * Returns the [Command] at the requested index.
      */
     fun <T : CommandData> getCommand(index: Int): Command<T> = Command(uncheckedCast(commands[index].value), commands[index].signers)
 
@@ -554,7 +554,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * Helper to simplify getting all [Command] items with a [CommandData] of a particular class, interface, or base class.
      * @param clazz The class type used for filtering via an [Class.isInstance] check.
      * [clazz] must be an extension of [CommandData].
-     * @return the possibly empty list of commands with [CommandData] values matching the clazz restriction.
+     * Returns the possibly empty list of commands with [CommandData] values matching the [clazz] restriction.
      */
     fun <T : CommandData> commandsOfType(clazz: Class<T>): List<Command<T>> {
         return commands.mapNotNull { (signers, _, value) -> clazz.castIfPossible(value)?.let { Command(it, signers) } }
@@ -568,7 +568,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of [CommandData].
      * @param predicate A filtering function taking a [CommandData] item of type T and returning true if it should be included in the list.
      * The class filtering is applied before the predicate.
-     * @return the possibly empty list of [Command] items with [CommandData] values matching the predicate and clazz restrictions.
+     * Returns the possibly empty list of [Command] items with [CommandData] values matching the predicate and [clazz] restrictions.
      */
     fun <T : CommandData> filterCommands(clazz: Class<T>, predicate: Predicate<T>): List<Command<T>> {
         return commandsOfType(clazz).filter { predicate.test(it.value) }
@@ -584,7 +584,7 @@ data class LedgerTransaction @JvmOverloads constructor(
      * [clazz] must be an extension of [CommandData].
      * @param predicate A filtering function taking a [CommandData] item of type T and returning true if it should be included in the list.
      * The class filtering is applied before the predicate.
-     * @return the [Command] item with [CommandData] values matching the predicate and clazz restrictions.
+     * Returns the [Command] item with [CommandData] values matching the predicate and [clazz] restrictions.
      * @throws IllegalArgumentException if no items, or multiple items matched the requirements.
      */
     fun <T : CommandData> findCommand(clazz: Class<T>, predicate: Predicate<T>): Command<T> {
@@ -598,14 +598,14 @@ data class LedgerTransaction @JvmOverloads constructor(
     /**
      * Helper to simplify getting an indexed attachment.
      * @param index the position of the item in the attachments.
-     * @return The Attachment at the requested index.
+     * Returns the [Attachment] at the requested index.
      */
     fun getAttachment(index: Int): Attachment = attachments[index]
 
     /**
      * Helper to simplify getting an indexed attachment.
      * @param id the SecureHash of the desired attachment.
-     * @return The Attachment with the matching id.
+     * Returns the [Attachment] with the matching id.
      * @throws IllegalArgumentException if no item matches the id.
      */
     fun getAttachment(id: SecureHash): Attachment = attachments.first { it.id == id }

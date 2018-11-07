@@ -38,7 +38,7 @@ interface NetworkMapCache : NetworkMapCacheBase {
      * found will be returned. See also: [NetworkMapCache.getNodesByLegalIdentityKey].
      *
      * @param party party to retrieve node information for.
-     * @return the node for the identity, or null if the node could not be found. This does not necessarily mean there is
+     * Returns the node for the identity, or null if the node could not be found. This does not necessarily mean there is
      * no node for the party, only that this cache is unaware of it.
      */
     fun getNodeByLegalIdentity(party: AbstractParty): NodeInfo?

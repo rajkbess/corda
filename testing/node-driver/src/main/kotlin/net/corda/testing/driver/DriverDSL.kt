@@ -71,7 +71,7 @@ interface DriverDSL {
      * @param maximumHeapSize The maximum JVM heap size to use for the node as a [String]. By default a number is interpreted
      *     as being in bytes. Append the letter 'k' or 'K' to the value to indicate Kilobytes, 'm' or 'M' to indicate
      *     megabytes, and 'g' or 'G' to indicate gigabytes. The default value is "512m" = 512 megabytes.
-     * @return A [CordaFuture] on the [NodeHandle] to the node. The future will complete when the node is available and
+     * Returns a [CordaFuture] on the [NodeHandle] to the node. The future will complete when the node is available and
      * it sees all previously started nodes, including the notaries.
      */
     fun startNode(
@@ -101,7 +101,7 @@ interface DriverDSL {
      *     megabytes, and 'g' or 'G' to indicate gigabytes. The default value is "512m" = 512 megabytes.
      * @param additionalCordapps Additional [TestCordapp]s that this node will have available, in addition to the ones common to all nodes managed by the [DriverDSL].
      * @param regenerateCordappsOnStart Whether existing [TestCordapp]s unique to this node will be re-generated on start. Useful when stopping and restarting the same node.
-     * @return A [CordaFuture] on the [NodeHandle] to the node. The future will complete when the node is available and
+     * Returns a [CordaFuture] on the [NodeHandle] to the node. The future will complete when the node is available and
      * it sees all previously started nodes, including the notaries.
      */
     fun startNode(
@@ -121,7 +121,7 @@ interface DriverDSL {
      * Helper function for starting a [Node] with custom parameters from Java.
      *
      * @param parameters The default parameters for the driver.
-     * @return [NodeHandle] that will be available sometime in the future.
+     * Returns [NodeHandle] that will be available sometime in the future.
      */
     fun startNode(parameters: NodeParameters): CordaFuture<NodeHandle> = startNode(defaultParameters = parameters)
 

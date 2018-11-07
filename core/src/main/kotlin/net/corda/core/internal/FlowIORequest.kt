@@ -31,7 +31,7 @@ sealed class FlowIORequest<out R : Any> {
      * Receive messages from sessions.
      *
      * @property sessions the sessions to receive messages from.
-     * @return a map from session to received message.
+     * Returns a map from session to received message.
      */
     data class Receive(
             val sessions: NonEmptySet<FlowSession>
@@ -43,7 +43,7 @@ sealed class FlowIORequest<out R : Any> {
      * @property sessionToMessage a map from session to message-to-be-sent. The keys also specify which sessions to
      *     receive from.
      * @property shouldRetrySend specifies whether the send should be retried.
-     * @return a map from session to received message.
+     * Returns a map from session to received message.
      */
     data class SendAndReceive(
             val sessionToMessage: Map<FlowSession, SerializedBytes<Any>>,
@@ -58,7 +58,7 @@ sealed class FlowIORequest<out R : Any> {
      * Wait for a transaction to be committed to the database.
      *
      * @property hash the hash of the transaction.
-     * @return the committed transaction.
+     * Returns the committed transaction.
      */
     data class WaitForLedgerCommit(val hash: SecureHash) : FlowIORequest<SignedTransaction>()
 
@@ -66,7 +66,7 @@ sealed class FlowIORequest<out R : Any> {
      * Get the FlowInfo of the specified sessions.
      *
      * @property sessions the sessions to get the FlowInfo of.
-     * @return a map from session to FlowInfo.
+     * Returns a map from session to FlowInfo.
      */
     data class GetFlowInfo(val sessions: NonEmptySet<FlowSession>) : FlowIORequest<Map<FlowSession, FlowInfo>>()
 

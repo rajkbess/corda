@@ -171,7 +171,7 @@ class MockNodeMessagingService(private val configuration: NodeConfiguration,
      * is true, waits until one has been provided on a different thread via send. If block is false, the return
      * result indicates whether a message was delivered or not.
      *
-     * @return the message that was processed, if any in this round.
+     * Returns the message that was processed, if any in this round.
      */
     fun pumpReceive(block: Boolean): InMemoryMessagingNetwork.MessageTransfer? {
         check(backgroundThread == null)

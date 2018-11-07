@@ -15,7 +15,7 @@ interface ClassDefinitionProvider : DefinitionProvider {
      * @param context The context in which the hook is called.
      * @param clazz The original class definition.
      *
-     * @return The updated class definition, or [clazz] if no changes are desired.
+     * Returns the updated class definition, or [clazz] if no changes are desired.
      */
     fun define(context: AnalysisRuntimeContext, clazz: ClassRepresentation): ClassRepresentation
 

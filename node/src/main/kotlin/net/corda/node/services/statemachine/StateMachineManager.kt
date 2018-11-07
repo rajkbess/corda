@@ -73,7 +73,7 @@ interface StateMachineManager {
     /**
      * Attempts to kill a flow. This is not a clean termination and should be reserved for exceptional cases such as stuck fibers.
      *
-     * @return whether the flow existed and was killed.
+     * Returns whether the flow existed and was killed.
      */
     fun killFlow(id: StateMachineRunId): Boolean
 

@@ -76,7 +76,7 @@ class NodeSchedulerService(private val clock: CordaClock,
          * used in demos or testing.  This will substitute a Fiber compatible Future so the current
          * [co.paralleluniverse.strands.Strand] is not blocked.
          *
-         * @return true if the [Future] is complete, false if the deadline was reached.
+         * Returns true if the [Future] is complete, false if the deadline was reached.
          */
         // We should try to make the Clock used in our code injectable (for tests etc) and to use the extension below
         // to wait in our code, rather than <code>Thread.sleep()</code> or other time-based pauses.

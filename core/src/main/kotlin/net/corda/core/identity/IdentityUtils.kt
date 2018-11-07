@@ -14,7 +14,7 @@ import java.security.PublicKey
  * @param publicKeys the [PublicKey]s to group.
  * @param ignoreUnrecognisedParties if this is false, throw an exception if some of the [PublicKey]s cannot be mapped
  * to a [Party].
- * @return a map of well known [Party] to associated [PublicKey]s.
+ * Returns a map of well known [Party] to associated [PublicKey]s.
  */
 @Throws(IllegalArgumentException::class)
 fun groupPublicKeysByWellKnownParty(serviceHub: ServiceHub, publicKeys: Collection<PublicKey>, ignoreUnrecognisedParties: Boolean): Map<Party, List<PublicKey>> =
@@ -26,7 +26,7 @@ fun groupPublicKeysByWellKnownParty(serviceHub: ServiceHub, publicKeys: Collecti
  * to a [Party].
  *
  * @param publicKeys the [PublicKey]s to group.
- * @return a map of well known [Party] to associated [PublicKey]s.
+ * Returns a map of well known [Party] to associated [PublicKey]s.
  */
 // Cannot use @JvmOverloads in interface
 @Throws(IllegalArgumentException::class)
@@ -39,7 +39,7 @@ fun groupPublicKeysByWellKnownParty(serviceHub: ServiceHub, publicKeys: Collecti
  * @param parties the [AbstractParty]s to group.
  * @param ignoreUnrecognisedParties if this is false, throw an exception if some of the [AbstractParty]s cannot be mapped
  * to a [Party].
- * @return a map of well known [Party] to associated [AbstractParty]s.
+ * Returns a map of well known [Party] to associated [AbstractParty]s.
  */
 @Throws(IllegalArgumentException::class)
 fun groupAbstractPartyByWellKnownParty(serviceHub: ServiceHub, parties: Collection<AbstractParty>, ignoreUnrecognisedParties: Boolean): Map<Party, List<AbstractParty>> {
@@ -55,7 +55,7 @@ fun groupAbstractPartyByWellKnownParty(serviceHub: ServiceHub, parties: Collecti
  * to a [Party].
  *
  * @param parties the [AbstractParty]s to group.
- * @return a map of well known [Party] to associated [AbstractParty]s.
+ * Returns a map of well known [Party] to associated [AbstractParty]s.
  */
 // Cannot use @JvmOverloads in interface
 @Throws(IllegalArgumentException::class)
@@ -66,7 +66,7 @@ fun groupAbstractPartyByWellKnownParty(serviceHub: ServiceHub, parties: Collecti
 /**
  * Remove this node from a map of well known [Party]s.
  *
- * @return a new copy of the map, with he well known [Party] for this node removed.
+ * Returns a new copy of the map, with he well known [Party] for this node removed.
  */
 fun <T> excludeHostNode(serviceHub: ServiceHub, map: Map<Party, T>): Map<Party, T> = map.filterKeys { !serviceHub.myInfo.isLegalIdentity(it) }
 
@@ -74,6 +74,6 @@ fun <T> excludeHostNode(serviceHub: ServiceHub, map: Map<Party, T>): Map<Party, 
  * Remove the [Party] associated with the notary of a [SignedTransaction] from the a map of [Party]s.  It is a no-op
  * if the notary is null.
  *
- * @return a new copy of the map, with the well known [Party] for the notary removed.
+ * Returns a new copy of the map, with the well known [Party] for the notary removed.
  */
 fun <T> excludeNotary(map: Map<Party, T>, stx: SignedTransaction): Map<Party, T> = map.filterKeys { it != stx.notary }

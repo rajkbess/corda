@@ -77,7 +77,7 @@ fun String.hexToBase64(): String = hexToByteArray().toBase64()
 /**
  * Method to return the [PublicKey] object given its Base58-[String] representation.
  * @param base58String the Base58 encoded format of the serialised [PublicKey].
- * @return the resulted [PublicKey] after decoding the [base58String] input and then deserialising to a [PublicKey] object.
+ * Returns the resulted [PublicKey] after decoding the [base58String] input and then deserialising to a [PublicKey] object.
  */
 fun parsePublicKeyBase58(base58String: String): PublicKey = Crypto.decodePublicKey(base58String.base58ToByteArray())
 

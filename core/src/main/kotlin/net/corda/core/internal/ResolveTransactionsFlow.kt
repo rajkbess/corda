@@ -21,7 +21,7 @@ import kotlin.math.min
  * Resolves transactions for the specified [txHashes] along with their full history (dependency graph) from [otherSide].
  * Each retrieved transaction is validated and inserted into the local transaction storage.
  *
- * @return a list of verified [SignedTransaction] objects, in a depth-first order.
+ * Returns a list of verified [SignedTransaction] objects, in a depth-first order.
  */
 @DeleteForDJVM
 class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
@@ -34,7 +34,7 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
      * Resolves and validates the dependencies of the specified [SignedTransaction]. Fetches the attachments, but does
      * *not* validate or store the [SignedTransaction] itself.
      *
-     * @return a list of verified [SignedTransaction] objects, in a depth-first order.
+     * Returns a list of verified [SignedTransaction] objects, in a depth-first order.
      */
     constructor(signedTransaction: SignedTransaction, otherSide: FlowSession) : this(dependencyIDs(signedTransaction), otherSide) {
         this.signedTransaction = signedTransaction

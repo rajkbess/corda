@@ -41,8 +41,8 @@ object CordappInfoResolver {
      * than the platform version that introduces the new behaviour.
      * In situations where a `[CordappProvider]` is available the CorDapp context should be obtained from there.
      *
-     * @return Information about the CorDapp from which the invoker is called, null if called outside a CorDapp or the
-     * calling CorDapp cannot be reliably determined..
+     * Returns information about the CorDapp from which the invoker is called, null if called outside a CorDapp or the
+     * calling CorDapp cannot be reliably determined.
      */
     fun getCorDappInfo(): CordappImpl.Info? = cordappInfoResolver()
 

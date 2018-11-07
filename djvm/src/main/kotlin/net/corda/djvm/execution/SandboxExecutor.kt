@@ -37,7 +37,7 @@ open class SandboxExecutor<in TInput, out TOutput>(
      * @param runnableClass The entry point of the sandboxed code to run.
      * @param input The input to provide to the sandboxed environment.
      *
-     * @returns The output returned from the sandboxed code upon successful completion.
+     * Returns the output returned from the sandboxed code upon successful completion.
      * @throws SandboxException Any exception thrown inside the sandbox gets wrapped and re-thrown in the context of the
      * caller, with additional information about the sandboxed environment.
      */
@@ -109,7 +109,7 @@ open class SandboxExecutor<in TInput, out TOutput>(
      *
      * @param classSource The class source to load.
      *
-     * @return A [LoadedClass] with the class' byte code, type and name.
+     * Returns a [LoadedClass] with the class' byte code, type and name.
      */
     fun load(classSource: ClassSource): LoadedClass {
         val context = AnalysisContext.fromConfiguration(configuration.analysisConfiguration)
@@ -125,7 +125,7 @@ open class SandboxExecutor<in TInput, out TOutput>(
      *
      * @param classSources The classes that, together with their dependencies, should be validated.
      *
-     * @return A collection of loaded classes with their byte code representation for the provided class sources, and a
+     * Returns a collection of loaded classes with their byte code representation for the provided class sources, and a
      * set of messages produced during validation.
      * @throws Exception Upon failure, an exception with details about any rule violations and/or invalid references.
      */
@@ -150,7 +150,7 @@ open class SandboxExecutor<in TInput, out TOutput>(
      * @param classLoader The class loader to use for validation.
      * @param classSources The classes that, together with their dependencies, should be validated.
      *
-     * @return A collection of loaded classes with their byte code representation for the provided class sources, and a
+     * Returns a collection of loaded classes with their byte code representation for the provided class sources, and a
      * set of messages produced during validation.
      * @throws Exception Upon failure, an exception with details about any rule violations and/or invalid references.
      */

@@ -22,13 +22,13 @@ interface CheckpointStorage {
 
     /**
      * Remove existing checkpoint from the store.
-     * @return whether the id matched a checkpoint that was removed.
+     * Returns whether the id matched a checkpoint that was removed.
      */
     fun removeCheckpoint(id: StateMachineRunId): Boolean
 
     /**
      * Load an existing checkpoint from the store.
-     * @return the checkpoint, still in serialized form, or null if not found.
+     * Returns the checkpoint, still in serialized form, or null if not found.
      */
     fun getCheckpoint(id: StateMachineRunId): SerializedBytes<Checkpoint>?
 
@@ -42,7 +42,7 @@ interface CheckpointStorage {
      * This needs to run before Hibernate is initialised.
      *
      * @param connection The SQL Connection.
-     * @return the number of checkpoints stored in the database.
+     * Returns the number of checkpoints stored in the database.
      */
     fun getCheckpointCount(connection: Connection): Long
 }

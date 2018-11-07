@@ -242,7 +242,8 @@ object Crypto {
      * This function is usually called by key generators and verify signature functions.
      * In case the input is not a key in the supportedSignatureSchemes map, null will be returned.
      * @param schemeCodeName a [String] that should match a supported signature scheme code name (e.g. ECDSA_SECP256K1_SHA256), see [Crypto].
-     * @return a currently supported SignatureScheme.
+     *
+     * Returns a currently supported [SignatureScheme].
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      */
     @JvmStatic
@@ -256,7 +257,8 @@ object Crypto {
      * This function is usually called when requiring to verify signatures and the signing schemes must be defined.
      * For the supported signature schemes see [Crypto].
      * @param key either private or public.
-     * @return a currently supported SignatureScheme.
+     *
+     * Returns a currently supported [SignatureScheme].
      * @throws IllegalArgumentException if the requested key type is not supported.
      */
     @JvmStatic
@@ -270,7 +272,8 @@ object Crypto {
      * This function is usually called when requiring to verify signatures and the signing schemes must be defined.
      * For the supported signature schemes see [Crypto].
      * @param key either private or public.
-     * @return a currently supported SignatureScheme.
+     *
+     * Returns a currently supported [SignatureScheme].
      * @throws IllegalArgumentException if the requested key type is not supported.
      */
     @JvmStatic
@@ -391,7 +394,8 @@ object Crypto {
      * doSign(signatureScheme: String, privateKey: PrivateKey, clearData: ByteArray).
      * @param privateKey the signer's [PrivateKey].
      * @param clearData the data/message to be signed in [ByteArray] form (usually the Merkle root).
-     * @return the digital signature (in [ByteArray]) on the input message.
+     *
+     * Returns the digital signature (in [ByteArray]) on the input message.
      * @throws IllegalArgumentException if the signature scheme is not supported for this private key.
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
@@ -406,7 +410,8 @@ object Crypto {
      * @param schemeCodeName a signature scheme's code name (e.g. ECDSA_SECP256K1_SHA256).
      * @param privateKey the signer's [PrivateKey].
      * @param clearData the data/message to be signed in [ByteArray] form (usually the Merkle root).
-     * @return the digital signature (in [ByteArray]) on the input message.
+     *
+     * Returns the digital signature (in [ByteArray]) on the input message.
      * @throws IllegalArgumentException if the signature scheme is not supported.
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
@@ -423,7 +428,8 @@ object Crypto {
      * @param signatureScheme a [SignatureScheme] object, retrieved from supported signature schemes, see [Crypto].
      * @param privateKey the signer's [PrivateKey].
      * @param clearData the data/message to be signed in [ByteArray] form (usually the Merkle root).
-     * @return the digital signature (in [ByteArray]) on the input message.
+     *
+     * Returns the digital signature (in [ByteArray]) on the input message.
      * @throws IllegalArgumentException if the signature scheme is not supported for this private key.
      * @throws InvalidKeyException if the private key is invalid.
      * @throws SignatureException if signing is not possible due to malformed data or private key.
@@ -461,7 +467,8 @@ object Crypto {
      * a timestamp or partial and blind signature indicators.
      * @param keyPair the signer's [KeyPair].
      * @param signableData a [SignableData] object that adds extra information to a transaction.
-     * @return a [TransactionSignature] object than contains the output of a successful signing, signer's public key and
+     *
+     * Returns a [TransactionSignature] object than contains the output of a successful signing, signer's public key and
      * the signature metadata.
      * @throws IllegalArgumentException if the signature scheme is not supported for this private key.
      * @throws InvalidKeyException if the private key is invalid.
@@ -492,7 +499,8 @@ object Crypto {
      * @param publicKey the signer's [PublicKey].
      * @param signatureData the signatureData on a message.
      * @param clearData the clear data/message that was signed (usually the Merkle root).
-     * @return true if verification passes or throws an exception if verification fails.
+     *
+     * Returns true if verification passes or throws an exception if verification fails.
      * @throws InvalidKeyException if the key is invalid.
      * @throws SignatureException if this signatureData object is not initialized properly,
      * the passed-in signatureData is improperly encoded or of the wrong type,
@@ -514,7 +522,8 @@ object Crypto {
      * @param publicKey the signer's [PublicKey].
      * @param signatureData the signatureData on a message.
      * @param clearData the clear data/message that was signed (usually the Merkle root).
-     * @return true if verification passes or throws an exception if verification fails.
+     *
+     * Returns true if verification passes or throws an exception if verification fails.
      * @throws InvalidKeyException if the key is invalid.
      * @throws SignatureException if this signatureData object is not initialized properly,
      * the passed-in signatureData is improperly encoded or of the wrong type,
@@ -534,7 +543,8 @@ object Crypto {
      * @param publicKey the signer's [PublicKey].
      * @param signatureData the signatureData on a message.
      * @param clearData the clear data/message that was signed (usually the Merkle root).
-     * @return true if verification passes or throws an exception if verification fails.
+     *
+     * Returns true if verification passes or throws an exception if verification fails.
      * @throws InvalidKeyException if the key is invalid.
      * @throws SignatureException if this signatureData object is not initialized properly,
      * the passed-in signatureData is improperly encoded or of the wrong type,
@@ -562,7 +572,8 @@ object Crypto {
      * It returns true if it succeeds, but it always throws an exception if verification fails.
      * @param txId transaction's id.
      * @param transactionSignature the signature on the transaction.
-     * @return true if verification passes or throw exception if verification fails.
+     *
+     * true if verification passes or throw exception if verification fails.
      * @throws InvalidKeyException if the key is invalid.
      * @throws SignatureException if this signatureData object is not initialized properly,
      * the passed-in signatureData is improperly encoded or of the wrong type,
@@ -609,7 +620,8 @@ object Crypto {
      * @param publicKey the signer's [PublicKey].
      * @param signatureData the signatureData on a message.
      * @param clearData the clear data/message that was signed (usually the Merkle root).
-     * @return true if verification passes or false if verification fails.
+     *
+     * Returns true if verification passes or false if verification fails.
      * @throws SignatureException if this signatureData object is not initialized properly,
      * the passed-in signatureData is improperly encoded or of the wrong type,
      * if this signatureData scheme is unable to process the input data provided, if the verification is not possible.
@@ -628,7 +640,8 @@ object Crypto {
      * @param publicKey the signer's [PublicKey].
      * @param signatureData the signatureData on a message.
      * @param clearData the clear data/message that was signed (usually the Merkle root).
-     * @return true if verification passes or false if verification fails.
+     *
+     * Returns true if verification passes or false if verification fails.
      * @throws SignatureException if this signatureData object is not initialized properly,
      * the passed-in signatureData is improperly encoded or of the wrong type,
      * if this signatureData scheme is unable to process the input data provided, if the verification is not possible.
@@ -650,7 +663,8 @@ object Crypto {
      * Utility to simplify the act of generating keys.
      * Normally, we don't expect other errors here, assuming that key generation parameters for every supported signature scheme have been unit-tested.
      * @param schemeCodeName a signature scheme's code name (e.g. ECDSA_SECP256K1_SHA256).
-     * @return a KeyPair for the requested signature scheme code name.
+     *
+     * Returns a KeyPair for the requested signature scheme code name.
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      */
     @DeleteForDJVM
@@ -661,7 +675,8 @@ object Crypto {
      * Generate a [KeyPair] for the selected [SignatureScheme].
      * Note that RSA is the sole algorithm initialized specifically by its supported keySize.
      * @param signatureScheme a supported [SignatureScheme], see [Crypto], default to [DEFAULT_SIGNATURE_SCHEME] if not provided.
-     * @return a new [KeyPair] for the requested [SignatureScheme].
+     *
+     * Returns a new [KeyPair] for the requested [SignatureScheme].
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      */
     @DeleteForDJVM
@@ -731,7 +746,8 @@ object Crypto {
      * @param signatureScheme the [SignatureScheme] of the private key input.
      * @param privateKey the [PrivateKey] that will be used as key to the HMAC-ed DKG function.
      * @param seed an extra seed that will be used as value to the underlying HMAC.
-     * @return a new deterministically generated [KeyPair].
+     *
+     * Returns a new deterministically generated [KeyPair].
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      * @throws UnsupportedOperationException if deterministic key generation is not supported for this particular scheme.
      */
@@ -753,7 +769,8 @@ object Crypto {
      * Use this method if the [SignatureScheme] of the private key input is not known.
      * @param privateKey the [PrivateKey] that will be used as key to the HMAC-ed DKG function.
      * @param seed an extra seed that will be used as value to the underlying HMAC.
-     * @return a new deterministically generated [KeyPair].
+     *
+     * Returns a new deterministically generated [KeyPair].
      * @throws IllegalArgumentException if the requested signature scheme is not supported.
      * @throws UnsupportedOperationException if deterministic key generation is not supported for this particular scheme.
      */
@@ -823,12 +840,13 @@ object Crypto {
     }
 
     /**
-     * Returns a key pair derived from the given [BigInteger] entropy. This is useful for unit tests
+     * Computes a key pair derived from the given [BigInteger] entropy. This is useful for unit tests
      * and other cases where you want hard-coded private keys.
      * Currently, the following schemes are supported: [EDDSA_ED25519_SHA512], [ECDSA_SECP256R1_SHA256] and [ECDSA_SECP256K1_SHA256].
      * @param signatureScheme a supported [SignatureScheme], see [Crypto].
      * @param entropy a [BigInteger] value.
-     * @return a new [KeyPair] from an entropy input.
+     *
+     * Returns a new [KeyPair] from an entropy input.
      * @throws IllegalArgumentException if the requested signature scheme is not supported for KeyPair generation using an entropy input.
      */
     @JvmStatic
@@ -844,7 +862,7 @@ object Crypto {
     /**
      * Returns a [DEFAULT_SIGNATURE_SCHEME] key pair derived from the given [BigInteger] entropy.
      * @param entropy a [BigInteger] value.
-     * @return a new [KeyPair] from an entropy input.
+     * Returns a new [KeyPair] from an entropy input.
      */
     @JvmStatic
     fun deriveKeyPairFromEntropy(entropy: BigInteger): KeyPair = deriveKeyPairFromEntropy(DEFAULT_SIGNATURE_SCHEME, entropy)
@@ -912,7 +930,8 @@ object Crypto {
      * This method currently applies to BouncyCastle's ECDSA (both R1 and K1 curves) and I2P's EdDSA (ed25519 curve).
      * @param publicKey a [PublicKey], usually used to validate a signer's public key in on the Curve.
      * @param signatureScheme a [SignatureScheme] object, retrieved from supported signature schemes, see [Crypto].
-     * @return true if the point lies on the curve or false if it doesn't.
+     *
+     * Returns true if the point lies on the curve or false if it doesn't.
      * @throws IllegalArgumentException if the requested signature scheme or the key type is not supported.
      */
     @JvmStatic
@@ -978,7 +997,8 @@ object Crypto {
     /**
      * Convert a public key to a supported implementation.
      * @param key a public key.
-     * @return a supported implementation of the input public key.
+     *
+     * Returns a supported implementation of the input public key.
      * @throws IllegalArgumentException on not supported scheme or if the given key specification
      * is inappropriate for a supported key factory to produce a private key.
      */
@@ -990,7 +1010,8 @@ object Crypto {
      * This method is usually required to retrieve a key (via its corresponding cert) from JKS keystores that by default
      * return SUN implementations.
      * @param key a public key.
-     * @return a supported implementation of the input public key.
+     *
+     * Returns a supported implementation of the input public key.
      * @throws IllegalArgumentException on not supported scheme or if the given key specification
      * is inappropriate for a supported key factory to produce a private key.
      */
@@ -1010,7 +1031,8 @@ object Crypto {
      * Convert a private key to a supported implementation. This can be used to convert a SUN's EC key to an BC key.
      * This method is usually required to retrieve keys from JKS keystores that by default return SUN implementations.
      * @param key a private key.
-     * @return a supported implementation of the input private key.
+     *
+     * Returns a supported implementation of the input private key.
      * @throws IllegalArgumentException on not supported scheme or if the given key specification
      * is inappropriate for a supported key factory to produce a private key.
      */

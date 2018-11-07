@@ -171,7 +171,7 @@ abstract class FlowLogic<out T> {
      * Note that this function is not just a simple send+receive pair: it is more efficient and more correct to
      * use this when you expect to do a message swap than do use [send] and then [receive] in turn.
      *
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Deprecated("Use FlowSession.sendAndReceive()", level = DeprecationLevel.WARNING)
     inline fun <reified R : Any> sendAndReceive(otherParty: Party, payload: Any): UntrustworthyData<R> {
@@ -187,7 +187,7 @@ abstract class FlowLogic<out T> {
      * Note that this function is not just a simple send+receive pair: it is more efficient and more correct to
      * use this when you expect to do a message swap than do use [send] and then [receive] in turn.
      *
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Deprecated("Use FlowSession.sendAndReceive()", level = DeprecationLevel.WARNING)
     @Suspendable
@@ -212,7 +212,7 @@ abstract class FlowLogic<out T> {
      * verified for consistency and that all expectations are satisfied, as a malicious peer may send you subtly
      * corrupted data in order to exploit your code.
      *
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Deprecated("Use FlowSession.receive()", level = DeprecationLevel.WARNING)
     @Suspendable
@@ -256,7 +256,7 @@ abstract class FlowLogic<out T> {
      * verified for consistency and that all expectations are satisfied, as a malicious peer may send you subtly
      * corrupted data in order to exploit your code.
      *
-     * @returns a [Map] containing the objects received, wrapped in an [UntrustworthyData], by the [FlowSession]s who sent them.
+     * Returns a [Map] containing the objects received, wrapped in an [UntrustworthyData], by the [FlowSession]s who sent them.
      */
     @Suspendable
     @JvmOverloads
@@ -278,7 +278,7 @@ abstract class FlowLogic<out T> {
      * verified for consistency and that all expectations are satisfied, as a malicious peer may send you subtly
      * corrupted data in order to exploit your code.
      *
-     * @returns a [List] containing the objects received, wrapped in an [UntrustworthyData], with the same order of [sessions].
+     * Returns a [List] containing the objects received, wrapped in an [UntrustworthyData], with the same order of [sessions].
      */
     @Suspendable
     @JvmOverloads
@@ -360,7 +360,7 @@ abstract class FlowLogic<out T> {
      * Returns a pair of the current progress step, as a string, and an observable of stringified changes to the
      * [progressTracker].
      *
-     * @return Returns null if this flow has no progress tracker.
+     * Returns null if this flow has no progress tracker.
      */
     fun track(): DataFeed<String, String>? {
         // TODO this is not threadsafe, needs an atomic get-step-and-subscribe
@@ -373,7 +373,7 @@ abstract class FlowLogic<out T> {
      * Returns a pair of the current progress step index (as integer) in steps tree of current [progressTracker], and an observable
      * of its upcoming changes.
      *
-     * @return Returns null if this flow has no progress tracker.
+     * Returns null if this flow has no progress tracker.
      */
     fun trackStepsTreeIndex(): DataFeed<Int, Int>? {
         // TODO this is not threadsafe, needs an atomic get-step-and-subscribe
@@ -386,7 +386,7 @@ abstract class FlowLogic<out T> {
      * Returns a pair of the current steps tree of current [progressTracker] as pairs of zero-based depth and stringified step
      * label and observable of upcoming changes to the structure.
      *
-     * @return Returns null if this flow has no progress tracker.
+     * Returns null if this flow has no progress tracker.
      */
     fun trackStepsTree(): DataFeed<List<Pair<Int, String>>, List<Pair<Int, String>>>? {
         // TODO this is not threadsafe, needs an atomic get-step-and-subscribe

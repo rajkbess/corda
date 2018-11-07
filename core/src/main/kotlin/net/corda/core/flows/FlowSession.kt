@@ -83,7 +83,7 @@ abstract class FlowSession {
      * Note that this function is not just a simple send+receive pair: it is more efficient and more correct to
      * use this when you expect to do a message swap than do use [send] and then [receive] in turn.
      *
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Suspendable
     inline fun <reified R : Any> sendAndReceive(payload: Any): UntrustworthyData<R> {
@@ -100,7 +100,7 @@ abstract class FlowSession {
      * use this when you expect to do a message swap than do use [send] and then [receive] in turn.
      *
      * @param maySkipCheckpoint setting it to true indicates to the platform that it may optimise away the checkpoint.
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Suspendable
     abstract fun <R : Any> sendAndReceive(
@@ -117,7 +117,7 @@ abstract class FlowSession {
      * Note that this function is not just a simple send+receive pair: it is more efficient and more correct to
      * use this when you expect to do a message swap than do use [send] and then [receive] in turn.
      *
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Suspendable
     abstract fun <R : Any> sendAndReceive(receiveType: Class<R>, payload: Any): UntrustworthyData<R>
@@ -142,7 +142,7 @@ abstract class FlowSession {
      * corrupted data in order to exploit your code.
      *
      * @param maySkipCheckpoint setting it to true indicates to the platform that it may optimise away the checkpoint.
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Suspendable
     abstract fun <R : Any> receive(receiveType: Class<R>, maySkipCheckpoint: Boolean): UntrustworthyData<R>
@@ -154,7 +154,7 @@ abstract class FlowSession {
      * verified for consistency and that all expectations are satisfied, as a malicious peer may send you subtly
      * corrupted data in order to exploit your code.
      *
-     * @return an [UntrustworthyData] wrapper around the received object.
+     * Returns an [UntrustworthyData] wrapper around the received object.
      */
     @Suspendable
     abstract fun <R : Any> receive(receiveType: Class<R>): UntrustworthyData<R>

@@ -70,7 +70,7 @@ class NodeInfoWatcher(private val nodePath: Path,
     /**
      * Read all the files contained in [nodePath] / [NODE_INFO_DIRECTORY] and keep watching the folder for further updates.
      *
-     * @return an [Observable] that emits lists of [NodeInfoUpdate]s. Each emitted list is a poll event of the folder and
+     * Returns an [Observable] that emits lists of [NodeInfoUpdate]s. Each emitted list is a poll event of the folder and
      * may be empty if no changes were detected.
      */
     fun nodeInfoUpdates(): Observable<List<NodeInfoUpdate>> {

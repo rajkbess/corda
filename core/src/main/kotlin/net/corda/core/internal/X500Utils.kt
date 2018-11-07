@@ -37,7 +37,7 @@ fun X500Principal.toX500Name(): X500Name = X500Name.getInstance(this.encoded)
  *
  * @param supportedAttributes list of supported attributes. If empty, it accepts all the attributes.
  *
- * @return attributes map for this principal
+ * Returns the attributes map for this principal.
  * @throws IllegalArgumentException if this principal consists of duplicated attributes or the attribute is not supported.
  *
  */

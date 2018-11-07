@@ -271,7 +271,7 @@ interface CordaRPCOps : RPCOps {
     /**
      * Attempts to kill a flow. This is not a clean termination and should be reserved for exceptional cases such as stuck fibers.
      *
-     * @return whether the flow existed and was killed.
+     * Returns whether the flow existed and was killed.
      */
     fun killFlow(id: StateMachineRunId): Boolean
 
@@ -326,7 +326,7 @@ interface CordaRPCOps : RPCOps {
      * a well known identity is passed in.
      *
      * @param party identity to determine well known identity for.
-     * @return well known identity, if found.
+     * Returns the well known identity, if found.
      */
     fun wellKnownPartyFromAnonymous(party: AbstractParty): Party?
 
@@ -339,7 +339,7 @@ interface CordaRPCOps : RPCOps {
     /**
      * Get a notary identity by name.
      *
-     * @return the notary identity, or null if there is no notary by that name. Note that this will return null if there
+     * Returns the notary identity, or null if there is no notary by that name. Note that this will return null if there
      * is a peer with that name but they are not a recognised notary service.
      */
     fun notaryPartyFromX500Name(x500Name: CordaX500Name): Party?
@@ -362,7 +362,7 @@ interface CordaRPCOps : RPCOps {
      * Notice that when there are more than one node for a given name (in case of distributed services) first service node
      * found will be returned.
      *
-     * @return the node info if available.
+     * Returns the [NodeInfo] if available.
      */
     fun nodeInfoFromParty(party: AbstractParty): NodeInfo?
 
@@ -415,7 +415,7 @@ interface CordaRPCOps : RPCOps {
      * Returns whether the node is waiting for pending flows to complete before shutting down.
      * Disabling draining mode cancels this state.
      *
-     * @return whether the node will shutdown when the pending flows count reaches zero.
+     * Returns whether the node will shutdown when the pending flows count reaches zero.
      */
     fun isWaitingForShutdown(): Boolean
 }

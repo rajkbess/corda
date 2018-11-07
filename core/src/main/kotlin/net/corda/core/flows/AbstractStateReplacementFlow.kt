@@ -77,7 +77,7 @@ abstract class AbstractStateReplacementFlow {
         /**
          * Build the upgrade transaction.
          *
-         * @return the transaction
+         * Returns the assembled transaction.
          */
         protected abstract fun assembleTx(): UpgradeTx
 
