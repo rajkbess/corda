@@ -218,7 +218,7 @@ data class InputStreamAndHash(val inputStream: InputStream, val sha256: SecureHa
          * Note that a slightly bigger than numOfExpectedBytes size is expected.
          */
         @DeleteForDJVM
-        fun createInMemoryTestZip(numOfExpectedBytes: Int, content: Byte): InputStreamAndHash {
+        fun createInMemoryTestZip(numOfExpectedBytes: Int, content: Byte, entryName: String = "z"): InputStreamAndHash {
             require(numOfExpectedBytes > 0)
             val baos = ByteArrayOutputStream()
             ZipOutputStream(baos).use { zos ->
@@ -226,7 +226,7 @@ data class InputStreamAndHash(val inputStream: InputStream, val sha256: SecureHa
                 val bytes = ByteArray(arraySize) { content }
                 val n = (numOfExpectedBytes - 1) / arraySize + 1 // same as Math.ceil(numOfExpectedBytes/arraySize).
                 zos.setLevel(Deflater.NO_COMPRESSION)
-                zos.putNextEntry(ZipEntry("z"))
+                zos.putNextEntry(ZipEntry(entryName))
                 for (i in 0 until n) {
                     zos.write(bytes, 0, arraySize)
                 }
