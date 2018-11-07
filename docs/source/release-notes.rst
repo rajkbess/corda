@@ -21,6 +21,13 @@ Significant Changes in 4.0
   for "current-ness". In other words, the contract logic isn't run for the referencing transaction only. It's still a
   normal state when it occurs in an input or output position.
 
+* **CorDapp JAR Signing and Sealing**:
+
+  CorDapps build by corda-gradle-plugins are now signed and sealed JAR files.
+  Signing can be configured or opt-out, and it defaults to use Corda development certificate.
+  Signed CorDapps facilitate signature constraints checks.
+  Sealed JARs require a unique package to be shipped within a single CorDapp JAR.
+
 << MORE TO COME >>
 
 .. _release_notes_v3_3:
