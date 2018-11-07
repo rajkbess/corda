@@ -27,6 +27,10 @@ class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader 
     tempFile.toURI().toURL()
 }.toTypedArray(), parent) {
 
+    companion object {
+        val excludeFromCheck = setOf("meta-inf/manifest.mf")
+    }
+
     @CordaSerializable
     class OverlappingAttachments(val path: String) : Exception() {
         override fun toString() = "Multiple attachments define a file at path $path"
@@ -53,8 +57,10 @@ class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader 
 
                         // If 2 entries have the same CRC, it means the same file is present in both attachments, so that is ok. TODO - Mike, wdyt? Should we implement this?
                         val path = nextJarEntry.name.toLowerCase().replace('\\', '/')
-                        if (path in classLoaderEntries) throw OverlappingAttachments(path)
-                        classLoaderEntries.add(path)
+                        if (path !in excludeFromCheck) {
+                            if (path in classLoaderEntries) throw OverlappingAttachments(path)
+                            classLoaderEntries.add(path)
+                        }
                     }
                 }
             }

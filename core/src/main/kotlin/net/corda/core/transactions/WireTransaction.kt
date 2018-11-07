@@ -107,7 +107,9 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
                                 ?: throw TransactionResolutionException(stateRef.txhash)
                         when (coreTransaction) {
                             is WireTransaction -> coreTransaction.componentGroups.firstOrNull { it.groupIndex == ComponentGroupEnum.OUTPUTS_GROUP.ordinal }?.components?.get(stateRef.index)
-                            else -> throw UnsupportedOperationException("Attempting to resolve a ${coreTransaction.javaClass}. This is not supported.")
+//                            else -> throw UnsupportedOperationException("Attempting to resolve a ${coreTransaction.javaClass}. This is not supported.")
+                            //TODO - for upgrade transactions, this needs to create the binary of the output states in the right classloader
+                            else -> services.loadState(stateRef).serialize()
                         }
                     } else {
                         services.loadState(stateRef).serialize()
