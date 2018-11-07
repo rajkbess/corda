@@ -84,7 +84,7 @@ public class CordaCaplet extends Capsule {
             // Create cordapps directory if it doesn't exist.
             requireCordappsDirExists(cordappsDir);
             // Add additional directories of JARs to the classpath (at the end), e.g., for JDBC drivers.
-            augmentClasspath((List<Path>) cp, cordappsDir);
+//            augmentClasspath((List<Path>) cp, cordappsDir);
             try {
                 List<String> jarDirs = nodeConfig.getStringList("jarDirs");
                 log(LOG_VERBOSE, "Configured JAR directories = " + jarDirs);

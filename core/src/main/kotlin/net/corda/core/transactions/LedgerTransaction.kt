@@ -5,12 +5,13 @@ import net.corda.core.contracts.*
 import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.isFulfilledBy
 import net.corda.core.identity.Party
-import net.corda.core.internal.AttachmentWithContext
-import net.corda.core.internal.castIfPossible
-import net.corda.core.internal.uncheckedCast
+import net.corda.core.internal.*
 import net.corda.core.node.NetworkParameters
 import net.corda.core.serialization.CordaSerializable
-import net.corda.core.utilities.Try
+import net.corda.core.serialization.SerializationFactory
+import net.corda.core.serialization.deserialize
+import net.corda.core.serialization.internal.AttachmentsClassLoaderBuilder
+import net.corda.core.utilities.contextLogger
 import java.util.*
 import java.util.function.Predicate
 
@@ -30,7 +31,7 @@ import java.util.function.Predicate
 // DOCSTART 1
 @KeepForDJVM
 @CordaSerializable
-data class LedgerTransaction @JvmOverloads constructor(
+data class LedgerTransaction @JvmOverloads @Deprecated("Client code should not instantiate LedgerTransaction.") constructor(
         /** The resolved input states which will be consumed/invalidated by the execution of this transaction. */
         override val inputs: List<StateAndRef<ContractState>>,
         override val outputs: List<TransactionState<ContractState>>,
@@ -44,7 +45,10 @@ data class LedgerTransaction @JvmOverloads constructor(
         val timeWindow: TimeWindow?,
         val privacySalt: PrivacySalt,
         private val networkParameters: NetworkParameters? = null,
-        override val references: List<StateAndRef<ContractState>> = emptyList()
+        override val references: List<StateAndRef<ContractState>> = emptyList(),
+        val componentGroups: List<ComponentGroup>? = null,
+        val resolvedInputBytes: List<BinaryStateAndRef>? = null,
+        val resolvedReferenceBytes: List<BinaryStateAndRef>? = null
 ) : FullTransaction() {
     //DOCEND 1
     init {
@@ -55,22 +59,8 @@ data class LedgerTransaction @JvmOverloads constructor(
     }
 
     private companion object {
-        private fun contractClassFor(className: ContractClassName, classLoader: ClassLoader?): Try<Class<out Contract>> {
-            return Try.on {
-                (classLoader ?: this::class.java.classLoader)
-                        .loadClass(className)
-                        .asSubclass(Contract::class.java)
-            }
-        }
-
-        private fun stateToContractClass(state: TransactionState<ContractState>): Try<Class<out Contract>> {
-            return contractClassFor(state.contract, state.data::class.java.classLoader)
-        }
+        private val logger = contextLogger()
     }
-
-    // Input reference state contracts are not required for verification.
-    private val contracts: Map<ContractClassName, Try<Class<out Contract>>> = (inputs.map { it.state } + outputs)
-            .map { it.contract to stateToContractClass(it) }.toMap()
 
     val inputStates: List<ContractState> get() = inputs.map { it.state.data }
     val referenceStates: List<ContractState> get() = references.map { it.state.data }
@@ -177,27 +167,74 @@ data class LedgerTransaction @JvmOverloads constructor(
         return result
     }
 
+    private fun contractClassFor(className: ContractClassName, classLoader: ClassLoader): Class<out Contract> = try {
+        classLoader.loadClass(className).asSubclass(Contract::class.java)
+    } catch (e: Exception) {
+        throw TransactionVerificationException.ContractCreationError(id, className, e)
+    }
+
     /**
      * Check the transaction is contract-valid by running the verify() for each input and output state contract.
      * If any contract fails to verify, the whole transaction is considered to be invalid.
+     * The contract verification logic is run in a custom classloader created for the current transaction.
      */
     private fun verifyContracts() {
-        val contractInstances = ArrayList<Contract>(contracts.size)
-        for ((key, result) in contracts) {
-            when (result) {
-                is Try.Failure -> throw TransactionVerificationException.ContractCreationError(id, key, result.exception)
-                is Try.Success -> {
-                    try {
-                        contractInstances.add(result.value.newInstance())
-                    } catch (e: Throwable) {
-                        throw TransactionVerificationException.ContractCreationError(id, result.value.name, e)
-                    }
+
+        if (resolvedInputBytes != null && resolvedReferenceBytes != null && componentGroups != null) {
+
+            val transactionClassLoader = AttachmentsClassLoaderBuilder.build(this.attachments)
+
+            // TODO - is this the right way to create a context?
+            val transactionContext = SerializationFactory.defaultFactory.defaultContext.withClassLoader(transactionClassLoader)
+
+            // Deserialize all relevant classes in the transaction classloader.
+            SerializationFactory.defaultFactory.withCurrentContext(transactionContext) {
+
+                val resolvedDeserializedInputs = resolvedInputBytes.map { StateAndRef(it.binaryState.deserialize<TransactionState<ContractState>>(), it.ref) }
+                val resolvedDeserializedReferences = resolvedReferenceBytes.map { StateAndRef(it.binaryState.deserialize<TransactionState<ContractState>>(), it.ref) }
+                val deserializedOutputs = deserialiseComponentGroup(componentGroups, TransactionState::class, ComponentGroupEnum.OUTPUTS_GROUP, forceDeserialize = true)
+                val deserializedCommands = deserialiseCommands(this.componentGroups, forceDeserialize = true)
+                val authenticatedArgs = deserializedCommands.map { cmd ->
+                    val parties = commands.find { it.value.javaClass.name == cmd.value.javaClass.name }!!.signingParties
+                    CommandWithParties(cmd.signers, parties, cmd.value)
                 }
+
+                val ledgerTransactionToVerify = this.copy(
+                        inputs = resolvedDeserializedInputs,
+                        outputs = deserializedOutputs,
+                        commands = authenticatedArgs,
+                        references = resolvedDeserializedReferences)
+
+                // Input reference state contracts are not required for verification.
+                val contractClasses = (resolvedDeserializedInputs.map { it.state } + deserializedOutputs).map { it.contract }.toSet()
+                        .map { it to contractClassFor(it, transactionClassLoader) }
+
+                verifyContracts(contractClasses, ledgerTransactionToVerify)
+            }
+
+        } else {
+
+            // This branch is only present for backwards compatibility.
+            // TODO - it should be removed once the constructor of LedgerTransaction is no longer public api.
+            logger.warn("The LedgerTransaction should not be instantiated directly from client code. Please use WireTransaction.toLedgerTransaction. The result of the verify method might not be accurate.")
+            val contracts = (inputs.map { it.state } + outputs).toSet()
+                    .map { it.contract to contractClassFor(it.contract, it.data.javaClass.classLoader) }
+            verifyContracts(contracts, this)
+        }
+    }
+
+    private fun verifyContracts(contractClasses: List<Pair<ContractClassName, Class<out Contract>>>, ledgerTransactionToVerify: LedgerTransaction) {
+        val contractInstances = contractClasses.map { (contractClassName, contractClass) ->
+            try {
+                contractClass.newInstance()
+            } catch (e: Throwable) {
+                throw TransactionVerificationException.ContractCreationError(id, contractClassName, e)
             }
         }
+
         contractInstances.forEach { contract ->
             try {
-                contract.verify(this)
+                contract.verify(ledgerTransactionToVerify)
             } catch (e: Throwable) {
                 throw TransactionVerificationException.ContractRejection(id, contract, e)
             }

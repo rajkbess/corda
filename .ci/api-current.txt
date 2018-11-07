@@ -4465,8 +4465,6 @@ public interface net.corda.core.serialization.SerializationContext
   @NotNull
   public abstract net.corda.core.serialization.ClassWhitelist getWhitelist()
   @NotNull
-  public abstract net.corda.core.serialization.SerializationContext withAttachmentsClassLoader(java.util.List<? extends net.corda.core.crypto.SecureHash>)
-  @NotNull
   public abstract net.corda.core.serialization.SerializationContext withClassLoader(ClassLoader)
   @NotNull
   public abstract net.corda.core.serialization.SerializationContext withPreferredSerializationVersion(net.corda.core.utilities.ByteSequence)

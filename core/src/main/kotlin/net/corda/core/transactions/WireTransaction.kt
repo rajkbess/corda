@@ -9,9 +9,11 @@ import net.corda.core.crypto.*
 import net.corda.core.identity.Party
 import net.corda.core.internal.Emoji
 import net.corda.core.node.NetworkParameters
+import net.corda.core.node.ServiceHub
 import net.corda.core.node.ServicesForResolution
 import net.corda.core.node.services.AttachmentId
 import net.corda.core.serialization.CordaSerializable
+import net.corda.core.serialization.deserialize
 import net.corda.core.serialization.serialize
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.lazyMapped
@@ -99,7 +101,18 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
         return toLedgerTransactionInternal(
                 resolveIdentity = { services.identityService.partyFromKey(it) },
                 resolveAttachment = { services.attachments.openAttachment(it) },
-                resolveStateRef = { services.loadState(it) },
+                resolveStateRefComponentGroup = { stateRef ->
+                    if (services is ServiceHub) {
+                        val coreTransaction = services.validatedTransactions.getTransaction(stateRef.txhash)?.coreTransaction
+                                ?: throw TransactionResolutionException(stateRef.txhash)
+                        when (coreTransaction) {
+                            is WireTransaction -> coreTransaction.componentGroups.firstOrNull { it.groupIndex == ComponentGroupEnum.OUTPUTS_GROUP.ordinal }?.components?.get(stateRef.index)
+                            else -> throw UnsupportedOperationException("Attempting to resolve a ${coreTransaction.javaClass}. This is not supported.")
+                        }
+                    } else {
+                        services.loadState(stateRef).serialize()
+                    }
+                },
                 networkParameters = services.networkParameters
         )
     }
@@ -119,13 +132,14 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
             resolveStateRef: (StateRef) -> TransactionState<*>?,
             @Suppress("UNUSED_PARAMETER") resolveContractAttachment: (TransactionState<ContractState>) -> AttachmentId?
     ): LedgerTransaction {
-        return toLedgerTransactionInternal(resolveIdentity, resolveAttachment, resolveStateRef, null)
+        // This reverts to serializing the resolved transaction state.
+        return toLedgerTransactionInternal(resolveIdentity, resolveAttachment, { stateRef -> resolveStateRef(stateRef)?.serialize() }, null)
     }
 
     private fun toLedgerTransactionInternal(
             resolveIdentity: (PublicKey) -> Party?,
             resolveAttachment: (SecureHash) -> Attachment?,
-            resolveStateRef: (StateRef) -> TransactionState<*>?,
+            resolveStateRefComponentGroup: (StateRef) -> OpaqueBytes?,
             networkParameters: NetworkParameters?
     ): LedgerTransaction {
         // Look up public keys to authenticated identities.
@@ -133,20 +147,36 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
             val parties = cmd.signers.mapNotNull { pk -> resolveIdentity(pk) }
             CommandWithParties(cmd.signers, parties, cmd.value)
         }
-        val resolvedInputs = inputs.lazyMapped { ref, _ ->
-            resolveStateRef(ref)?.let { StateAndRef(it, ref) } ?: throw TransactionResolutionException(ref.txhash)
+
+        val resolvedInputBytes = inputs.map { ref ->
+            BinaryStateAndRef(resolveStateRefComponentGroup(ref)!!, ref)
         }
-        val resolvedReferences = references.lazyMapped { ref, _ ->
-            resolveStateRef(ref)?.let { StateAndRef(it, ref) } ?: throw TransactionResolutionException(ref.txhash)
+        val resolvedInputs = resolvedInputBytes.lazyMapped { (serialized, ref), _ ->
+            StateAndRef(serialized.deserialize<TransactionState<ContractState>>(), ref)
         }
+
+        val resolvedReferenceBytes = references.map { ref ->
+            BinaryStateAndRef(resolveStateRefComponentGroup(ref)!!, ref)
+        }
+        val resolvedReferences = resolvedReferenceBytes.lazyMapped { (serialized, ref), _ ->
+            StateAndRef(serialized.deserialize<TransactionState<ContractState>>(), ref)
+        }
+
         val attachments = attachments.lazyMapped { att, _ ->
             resolveAttachment(att) ?: throw AttachmentResolutionException(att)
         }
-        val ltx = LedgerTransaction(resolvedInputs, outputs, authenticatedArgs, attachments, id, notary, timeWindow, privacySalt, networkParameters, resolvedReferences)
+
+        val ltx = LedgerTransaction(resolvedInputs, outputs, authenticatedArgs, attachments, id, notary, timeWindow, privacySalt, networkParameters, resolvedReferences, componentGroups, resolvedInputBytes, resolvedReferenceBytes)
+
         checkTransactionSize(ltx, networkParameters?.maxTransactionSize ?: 10485760)
+
         return ltx
     }
 
+    /**
+     * Deterministic function that checks if the transaction is below the maximum allowed size.
+     * It uses the binary representation of transactions.
+     */
     private fun checkTransactionSize(ltx: LedgerTransaction, maxTransactionSize: Int) {
         var remainingTransactionSize = maxTransactionSize
 
@@ -157,16 +187,16 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
 
         // This calculates a value that is slightly lower than the actual re-serialized version. But it is stable and does not depend on the classloader.
         fun componentGroupSize(componentGroup: ComponentGroupEnum): Int {
-            return this.componentGroups.firstOrNull { it.groupIndex == componentGroup.ordinal }?.let { cg -> cg.components.sumBy { it.size } + 4 } ?: 0
+            return this.componentGroups.firstOrNull { it.groupIndex == componentGroup.ordinal }?.let { cg -> cg.components.sumBy { it.size } + 4 }
+                    ?: 0
         }
 
         // Check attachments size first as they are most likely to go over the limit. With ContractAttachment instances
         // it's likely that the same underlying Attachment CorDapp will occur more than once so we dedup on the attachment id.
         ltx.attachments.distinctBy { it.id }.forEach { minus(it.size) }
 
-        // TODO - these can be optimized by creating a LazyStateAndRef class, that just stores (a pointer) the serialized output componentGroup from the previous transaction.
-        minus(ltx.references.serialize().size)
-        minus(ltx.inputs.serialize().size)
+        minus(ltx.resolvedInputBytes!!.sumBy { it.binaryState.size })
+        minus(ltx.resolvedReferenceBytes!!.sumBy { it.binaryState.size })
 
         // For Commands and outputs we can use the component groups as they are already serialized.
         minus(componentGroupSize(COMMANDS_GROUP))

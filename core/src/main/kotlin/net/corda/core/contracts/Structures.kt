@@ -175,6 +175,14 @@ data class StateAndRef<out T : ContractState>(val state: TransactionState<T>, va
 }
 // DOCEND 7
 
+/**
+ * A BinaryStateAndRef is a pair (BinaryStateRepresentation, StateRef).
+ * The [binaryState] is the actual component from the original transaction.
+ */
+@KeepForDJVM
+@CordaSerializable
+data class BinaryStateAndRef(val binaryState: OpaqueBytes, val ref: StateRef)
+
 /** A wrapper for a [StateAndRef] indicating that it should be added to a transaction as a reference input state. */
 data class ReferencedStateAndRef<out T : ContractState>(val stateAndRef: StateAndRef<T>)
 

@@ -143,7 +143,7 @@ open class TransactionBuilder @JvmOverloads constructor(
                             inputStates(),
                             resolvedOutputs,
                             commands,
-                            attachments + makeContractAttachments(services.cordappProvider),
+                            (attachments + makeContractAttachments(services.cordappProvider)).sorted().distinct(),
                             notary,
                             window,
                             referenceStates

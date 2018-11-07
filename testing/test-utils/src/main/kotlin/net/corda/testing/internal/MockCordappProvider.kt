@@ -10,8 +10,11 @@ import net.corda.core.node.services.AttachmentStorage
 import net.corda.node.cordapp.CordappLoader
 import net.corda.node.internal.cordapp.CordappProviderImpl
 import net.corda.testing.services.MockAttachmentStorage
+import java.io.ByteArrayOutputStream
 import java.nio.file.Paths
 import java.security.PublicKey
+import java.util.jar.JarOutputStream
+import java.util.zip.ZipEntry
 
 class MockCordappProvider(
         cordappLoader: CordappLoader,
@@ -37,7 +40,7 @@ class MockCordappProvider(
                 allFlows = emptyList(),
                 jarHash = SecureHash.allOnesHash)
         if (cordappRegistry.none { it.first.contractClassNames.contains(contractClassName) && it.second == contractHash }) {
-            cordappRegistry.add(Pair(cordapp, findOrImportAttachment(listOf(contractClassName), contractClassName.toByteArray(), attachments, contractHash, signers)))
+            cordappRegistry.add(Pair(cordapp, findOrImportAttachment(listOf(contractClassName), fakeAttachment(contractClassName), attachments, contractHash, signers)))
         }
         return cordappRegistry.findLast { contractClassName in it.first.contractClassNames }?.second!!
     }
@@ -55,4 +58,18 @@ class MockCordappProvider(
             attachments.importContractAttachment(contractClassNames, DEPLOYED_CORDAPP_UPLOADER, data.inputStream(), contractHash, signers)
         }
     }
+
+    private fun fakeAttachment(value: String): ByteArray =
+            ByteArrayOutputStream().use { baos ->
+                JarOutputStream(baos).use { jos ->
+                    jos.putNextEntry(ZipEntry(value))
+                    jos.writer().apply {
+                        append(value)
+                        flush()
+                    }
+                    jos.closeEntry()
+                }
+                baos.toByteArray()
+            }
+
 }
