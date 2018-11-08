@@ -32,9 +32,12 @@ import net.corda.testing.node.ledger
 import net.corda.testing.node.transaction
 import org.junit.Rule
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.*
+import java.util.jar.JarOutputStream
+import java.util.zip.ZipEntry
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
@@ -565,7 +568,7 @@ class ObligationTests {
 
     @Test
     fun `commodity settlement`() {
-        val commodityContractBytes = "https://www.big-book-of-banking-law.gov/commodity-claims.html".toByteArray()
+        val commodityContractBytes = fakeAttachment("https://www.big-book-of-banking-law.gov/commodity-claims.html")
         val defaultFcoj = Issued(defaultIssuer, Commodity.getInstance("FCOJ")!!)
         val oneUnitFcoj = Amount(1, defaultFcoj)
         val obligationDef = Obligation.Terms(NonEmptySet.of(commodityContractBytes.sha256() as SecureHash), NonEmptySet.of(defaultFcoj), TEST_TX_TIME)
@@ -590,6 +593,18 @@ class ObligationTests {
             }
         }
     }
+    private fun fakeAttachment(content: String): ByteArray =
+            ByteArrayOutputStream().use { baos ->
+                JarOutputStream(baos).use { jos ->
+                    jos.putNextEntry(ZipEntry("file1.txt"))
+                    jos.writer().apply {
+                        append(content)
+                        flush()
+                    }
+                    jos.closeEntry()
+                }
+                baos.toByteArray()
+            }
 
     @Test
     fun `payment default`() {
@@ -957,7 +972,7 @@ class ObligationTests {
         assertEquals(expected, actual)
     }
 
-    private val cashContractBytes = "https://www.big-book-of-banking-law.gov/cash-claims.html".toByteArray()
+    private val cashContractBytes = fakeAttachment("https://www.big-book-of-banking-law.gov/cash-claims.html")
     private val Issued<Currency>.OBLIGATION_DEF: Obligation.Terms<Currency>
         get() = Obligation.Terms(NonEmptySet.of(cashContractBytes.sha256() as SecureHash), NonEmptySet.of(this), TEST_TX_TIME)
     private val Amount<Issued<Currency>>.OBLIGATION: Obligation.State<Currency>
