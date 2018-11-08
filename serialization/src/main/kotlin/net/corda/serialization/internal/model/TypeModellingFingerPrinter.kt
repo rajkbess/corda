@@ -54,13 +54,10 @@ internal class FingerprintWriter(debugEnabled: Boolean) {
         private const val NULLABLE_HASH: String = "Nullable = true"
         private const val NOT_NULLABLE_HASH: String = "Nullable = false"
         private const val ANY_TYPE_HASH: String = "Any type = true"
-
-        val ANY = FingerprintWriter(false).writeAny().fingerprint
-
         private val logger = contextLogger()
     }
 
-    private val debugBuffer: StringBuilder? = if (debugEnabled) StringBuilder() else null
+    private val debugBuffer: StringBuilder? = if (true||debugEnabled) StringBuilder() else null
     private var hasher = Hashing.murmur3_128().newHasher()
 
     fun write(chars: CharSequence) = append(chars)
@@ -78,8 +75,9 @@ internal class FingerprintWriter(debugEnabled: Boolean) {
     }
 
     val fingerprint: String get() {
-        if (debugBuffer != null) logger.info(debugBuffer.toString())
-        return hasher.hash().asBytes().toBase64()
+        val base64 = hasher.hash().asBytes().toBase64()
+        if (debugBuffer != null) logger.info("$base64  <--  $debugBuffer")
+        return base64
     }
 }
 

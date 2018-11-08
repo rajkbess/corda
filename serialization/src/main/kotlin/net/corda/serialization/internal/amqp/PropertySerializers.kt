@@ -7,6 +7,7 @@ import java.io.NotSerializableException
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Type
+import java.lang.reflect.TypeVariable
 import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaGetter
 import kotlin.reflect.jvm.kotlinProperty
@@ -52,6 +53,8 @@ class PublicPropertyReader(private val readMethod: Method) : PropertyReader() {
     }
 
     override fun isNullable(): Boolean = readMethod.returnsNullable()
+
+    val genericReturnType get() = readMethod.genericReturnType
 }
 
 /**

@@ -68,7 +68,7 @@ interface SerializerFactory : LocalSerializerFactory, RemoteSerializerFactory, C
                 Float::class.java to "float",
                 Double::class.java to "double",
                 Decimal32::class.java to "decimal32",
-                Decimal64::class.java to "decimal62",
+                Decimal64::class.java to "decimal64",
                 Decimal128::class.java to "decimal128",
                 Date::class.java to "timestamp",
                 UUID::class.java to "uuid",
