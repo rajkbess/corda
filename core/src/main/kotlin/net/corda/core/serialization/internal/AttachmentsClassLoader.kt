@@ -19,7 +19,7 @@ import java.util.jar.JarFile
  * AttachmentsClassLoader is somewhat expensive, as every attachment is scanned to ensure that there are no overlapping
  * file paths.
  */
-@KeepForDJVM
+@DeleteForDJVM
 class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader = ClassLoader.getSystemClassLoader()) : URLClassLoader(attachments.map { attch ->
     val tempFile = File.createTempFile("${attch.id}", ".jar")
     attch.open().copyTo(tempFile.outputStream())
