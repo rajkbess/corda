@@ -1,17 +1,12 @@
 package net.corda.core.serialization.internal
 
-import com.github.benmanes.caffeine.cache.Cache
-import com.github.benmanes.caffeine.cache.Caffeine
-import net.corda.core.DeleteForDJVM
-import net.corda.core.KeepForDJVM
 import net.corda.core.contracts.Attachment
 import net.corda.core.contracts.ContractAttachment
 import net.corda.core.crypto.SecureHash
 import net.corda.core.internal.isUploaderTrusted
 import net.corda.core.serialization.CordaSerializable
-import java.io.File
-import java.net.URLClassLoader
-import java.util.jar.JarFile
+import java.io.IOException
+import java.net.*
 
 /**
  * A custom ClassLoader that knows how to load classes from a set of attachments. The attachments themselves only
@@ -19,16 +14,12 @@ import java.util.jar.JarFile
  * AttachmentsClassLoader is somewhat expensive, as every attachment is scanned to ensure that there are no overlapping
  * file paths.
  */
-@DeleteForDJVM
-class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader = ClassLoader.getSystemClassLoader()) : URLClassLoader(attachments.map { attch ->
-    val tempFile = File.createTempFile("${attch.id}", ".jar")
-    attch.open().copyTo(tempFile.outputStream())
-    tempFile.deleteOnExit()
-    tempFile.toURI().toURL()
-}.toTypedArray(), parent) {
+class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader = ClassLoader.getSystemClassLoader()) :
+        URLClassLoader(attachments.map { it.toUrl() }.toTypedArray(), parent) {
 
     companion object {
         val excludeFromCheck = setOf("meta-inf/manifest.mf")
+        private val ignore = URL.setURLStreamHandlerFactory(AttachmentURLStreamHandlerFactory)
     }
 
     @CordaSerializable
@@ -43,24 +34,22 @@ class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader 
 
         val classLoaderEntries = mutableSetOf<String>()
         for (attachment in attachments) {
-            File.createTempFile("${attachment.id}", ".jar").let { tempFile ->
-                attachment.open().copyTo(tempFile.outputStream())
-                JarFile(tempFile).use { jarFile ->
-                    jarFile.entries().iterator().forEach { nextJarEntry ->
-                        // We already verified that paths are not strange/game playing when we inserted the attachment
-                        // into the storage service. So we don't need to repeat it here.
-                        //
-                        // We forbid files that differ only in case, or path separator to avoid issues for Windows/Mac developers where the
-                        // filesystem tries to be case insensitive. This may break developers who attempt to use ProGuard.
-                        //
-                        // Also convert to Unix path separators as all resource/class lookups will expect this.
+            attachment.openAsJAR().use { jar ->
+                while (true) {
+                    val entry = jar.nextJarEntry ?: break
 
-                        // If 2 entries have the same CRC, it means the same file is present in both attachments, so that is ok. TODO - Mike, wdyt? Should we implement this?
-                        val path = nextJarEntry.name.toLowerCase().replace('\\', '/')
-                        if (path !in excludeFromCheck) {
-                            if (path in classLoaderEntries) throw OverlappingAttachments(path)
-                            classLoaderEntries.add(path)
-                        }
+                    // We already verified that paths are not strange/game playing when we inserted the attachment
+                    // into the storage service. So we don't need to repeat it here.
+                    //
+                    // We forbid files that differ only in case, or path separator to avoid issues for Windows/Mac developers where the
+                    // filesystem tries to be case insensitive. This may break developers who attempt to use ProGuard.
+                    //
+                    // Also convert to Unix path separators as all resource/class lookups will expect this.
+                    // If 2 entries have the same CRC, it means the same file is present in both attachments, so that is ok. TODO - Mike, wdyt?
+                    val path = entry.name.toLowerCase().replace('\\', '/')
+                    if (path !in excludeFromCheck) {
+                        if (path in classLoaderEntries) throw OverlappingAttachments(path)
+                        classLoaderEntries.add(path)
                     }
                 }
             }
@@ -73,16 +62,50 @@ class AttachmentsClassLoader(attachments: List<Attachment>, parent: ClassLoader 
  * can replace it with an alternative version.
  * TODO: is @DeleteForDJVM still necessary, as there ?
  */
-@DeleteForDJVM
 internal object AttachmentsClassLoaderBuilder {
-    private val cache: Cache<List<SecureHash>, AttachmentsClassLoader> = Caffeine.newBuilder().weakValues().maximumSize(1024).build()
+    private val cache = mutableMapOf<List<SecureHash>, AttachmentsClassLoader>()
 
     // TODO - find out if the right classloader is used as a parent
     fun build(attachments: List<Attachment>): AttachmentsClassLoader {
-        return cache.get(attachments.map { it.id }.sorted()) {
+        return cache.computeIfAbsent(attachments.map { it.id }.sorted()) {
             AttachmentsClassLoader(attachments)
-        }!!
+        }
     }
 }
 
+fun Attachment.toUrl(): URL {
+    val id = this.id.toString()
+    AttachmentURLStreamHandlerFactory.content[id] = this
+    return URL("attachment", "", -1, id, AttachmentURLStreamHandler(AttachmentURLStreamHandlerFactory.content))
+}
 
+class AttachmentURLStreamHandler(val attachments: Map<String, Attachment>) : URLStreamHandler() {
+    @Throws(IOException::class)
+    override fun openConnection(u: URL): URLConnection {
+        if (u.protocol != "attachment") {
+            throw IOException("Cannot handle protocol: ${u.protocol}")
+        }
+        return object : URLConnection(u) {
+            val attachmentId = u.path
+            override fun getContentLengthLong() = attachments[attachmentId]!!.size.toLong() ?: 0
+
+            @Throws(IOException::class)
+            override fun getInputStream() = attachments[attachmentId]!!.open()
+
+            @Throws(IOException::class)
+            override fun connect() {
+                connected = true
+            }
+        }
+    }
+}
+
+object AttachmentURLStreamHandlerFactory : URLStreamHandlerFactory {
+    val content = mutableMapOf<String, Attachment>()
+
+    override fun createURLStreamHandler(protocol: String): URLStreamHandler? {
+        return if ("attachment" == protocol) {
+            AttachmentURLStreamHandler(content)
+        } else null
+    }
+}
