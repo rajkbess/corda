@@ -62,7 +62,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
             Files.createDirectories(outPath)
 
             val allHeaders = mutableListOf<String>()
-            generateClassesFor(listOf(Family::class.java)) { path, content ->
+            generateClassesFor(listOf(WireTransaction::class.java)) { path, content ->
                 val filePath = outPath.resolve(path)
                 Files.createDirectories(filePath.parent)
                 Files.write(filePath, content.toByteArray())
@@ -140,9 +140,12 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
         while (workQ.isNotEmpty()) {
             val type = workQ.pop()
             try {
-                check(!type.baseClass.isArray) { "$type is an array" }
                 val baseName: String = type.baseClass.name
                 val (code, dependencies, needsSpecialisationFor) = generateClassFor(type, serializerFactory, seenSoFar)
+
+                check(dependencies.none { it.baseClass.isArray }) {
+                    dependencies
+                }
 
                 // We have to pre-declare any type that appears anywhere in any field type, including in nested generics.
                 val predeclarationsNeeded: MutableSet<Type> = dependencies
@@ -340,16 +343,16 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
             // Utility types.
             "java.util.Date" -> "proton::timestamp"
             "java.util.UUID" -> "proton::uuid"
-            ByteArray::class.java.name -> "proton::binary"
+            "byte[]" -> "proton::binary"
             "java.lang.String" -> "std::string"
 
             // Classes, containers and other custom types.
             else -> when (resolved.baseClass.name) {
                 "java.util.List" -> {
                     val innerType: Type = (resolved as ParameterizedType).actualTypeArguments[0]
-                    dependencies += innerType
-                    //val (innerName, innerDeps) = convertType()
-                    "std::list<corda::ptr<${innerType.cppName}>>"
+                    val (innerName, innerDeps) = convertType(innerType, innerType)
+                    dependencies += innerDeps
+                    "std::list<$innerName>"
                 }
                 "java.util.Map" -> {
                     resolved as ParameterizedType
@@ -362,6 +365,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                     "std::map<$cppKeyType, $cppValueType>"
                 }
                 else -> {
+                    check(!resolved.baseClass.isArray) { "Unsupported array type: $resolved" }
                     dependencies += resolved
                     "corda::ptr<${genericReturnType!!.cppName}>"
                 }
