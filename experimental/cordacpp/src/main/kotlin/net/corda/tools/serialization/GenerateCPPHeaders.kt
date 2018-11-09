@@ -27,10 +27,7 @@ import java.nio.file.Paths
 import java.time.Instant
 import java.util.*
 
-fun main(args: Array<String>) = GenerateSerializationLibs().start(args)
-
-@CordaSerializable
-data class Village(val name: String)
+fun main(args: Array<String>) = GenerateCPPHeaders().start(args)
 
 @CordaSerializable
 data class City(val name: String)
@@ -44,7 +41,7 @@ data class Family(val parents: Map<String, Person>, val lastName: String, val li
 /**
  * Generates C++ source code that deserialises types, based on types discovered using classpath scanning.
  */
-class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs", "Generate source code for reading serialised messages in non-JVM languages") {
+class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate source code for reading serialised messages in C++ languages") {
     @CommandLine.Parameters(index = "0", paramLabel = "OUTPUT", description = ["Path to where the output files are generated"], defaultValue = "out")
     lateinit var outputDirectory: String
 
@@ -55,14 +52,14 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
 
     override fun runProgram(): Int {
         try {
+            println("Initializing")
             initSerialization()
-            makeTestData()
 
             val outPath = Paths.get(outputDirectory)
             Files.createDirectories(outPath)
 
             val allHeaders = mutableListOf<String>()
-            generateClassesFor(listOf(WireTransaction::class.java)) { path, content ->
+            generateClassesFor(listOf(WireTransaction::class.java, SignedTransaction::class.java)) { path, content ->
                 val filePath = outPath.resolve(path)
                 Files.createDirectories(filePath.parent)
                 Files.write(filePath, content.toByteArray())
@@ -70,7 +67,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                 allHeaders += path.toString()
             }
 
-            val uberHeader = allHeaders.map { "#include \"$it\"" }
+            val uberHeader = allHeaders.map { "#include \"$it\"" }.sorted()
             val uberHeaderPath = outPath.resolve("all-messages.h")
             Files.write(uberHeaderPath, uberHeader)
             println("Generated $uberHeaderPath")
@@ -108,8 +105,6 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
         // C++ templated classes, and use specialisation to allow the same class to have many concrete descriptors
         // at decode time.
         //
-        // buf will contain the class definitions, and at the end a pile of specialised descriptor functions.
-        val buf = StringBuffer()
         // The factory lets us look up serializers, which gives us the fingerprints we will use to check the format
         // of the data we're decoding matches the generated code. This version of C++ support doesn't do evolution.
         val serializerFactory: SerializerFactory = Scheme.getSerializerFactory(SerializationFactory.defaultFactory.defaultContext)
@@ -174,12 +169,12 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                 workQ += dependencies
                 seenSoFar += type.eraseGenerics
             } catch (e: AMQPNotSerializableException) {
-                buf.appendln("// Skipping $type due to inability to process it: ${e.message}")
+                println("Warning: Skipping $type due to inability to process it: ${e.message}")
             }
         }
 
         for ((baseName, classSource) in classSources) {
-            val path = Paths.get(baseName.replace('.', File.separatorChar) + ".h")
+            val path = Paths.get(baseName.replace('.', File.separatorChar).replace('$', '.') + ".h")
             val guardName = baseName.toUpperCase().replace('.', '_') + "_H"
             val predeclarations = classPredeclarations[baseName]?.let { formatPredeclarations(it, baseName) } ?: ""
             val specializations = descriptorSpecializations[baseName]?.joinToString(System.lineSeparator()) ?: ""
@@ -247,7 +242,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
         val amqpSerializer: AMQPSerializer<Any> = serializerFactory.get(type)
         if (amqpSerializer !is ObjectSerializer) {
             // Some serialisers are special and need to be hand coded.
-            val warning = "Need to write code for custom serializer ${amqpSerializer.type} / ${amqpSerializer.typeDescriptor}"
+            val warning = "Need to write code for custom serializer '${amqpSerializer.type}' / ${amqpSerializer.typeDescriptor}"
             println(warning)
             return GenResult("// TODO: $warning", emptySet(), null)
         }
