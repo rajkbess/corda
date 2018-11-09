@@ -8,8 +8,7 @@ import net.corda.core.serialization.SerializationFactory
 import net.corda.core.serialization.internal.SerializationEnvironment
 import net.corda.core.serialization.internal._contextSerializationEnv
 import net.corda.core.serialization.serialize
-import net.corda.core.transactions.SignedTransaction
-import net.corda.core.transactions.WireTransaction
+import net.corda.core.utilities.OpaqueBytes
 import net.corda.serialization.internal.AMQP_P2P_CONTEXT
 import net.corda.serialization.internal.AMQP_STORAGE_CONTEXT
 import net.corda.serialization.internal.CordaSerializationMagic
@@ -24,19 +23,42 @@ import java.lang.reflect.TypeVariable
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.security.PublicKey
 import java.time.Instant
 import java.util.*
 
 fun main(args: Array<String>) = GenerateCPPHeaders().start(args)
 
 @CordaSerializable
-data class City(val name: String)
+data class Employee(val names: Pair<String, String>)
 
 @CordaSerializable
-data class Person(val name: String, val age: Int)
+data class Department(val name: String, val employees: List<Employee>)
 
 @CordaSerializable
-data class Family(val parents: Map<String, Person>, val lastName: String, val livingIn: List<City>)
+data class Company(
+        val name: String,
+        val createdInYear: Short,
+        val logo: OpaqueBytes,
+        val departments: List<Department>,
+        val historicalEvents: Map<String, Instant>
+)
+
+private fun makeTestData() {
+    val e1 = Employee(Pair("Mike", "Hearn"))
+    val e2 = Employee(Pair("Richard", "Brown"))
+    val e3 = Employee(Pair("James", "Carlyle"))
+    val d1 = Department("Platform", listOf(e1, e2, e3))
+    val c = Company(
+            "R3", 2014, OpaqueBytes.of(0),
+            listOf(d1),
+            mapOf(
+                    "First lab project proposal email" to Instant.parse("2014-09-24T22:11:00.00Z"),
+                    "Hired Mike" to Instant.parse("2015-11-03T12:00:00.00Z")
+            )
+    )
+    File("/tmp/buf").writeBytes(c.serialize().bytes)
+}
 
 /**
  * Generates C++ source code that deserialises types, based on types discovered using classpath scanning.
@@ -54,12 +76,13 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
         try {
             println("Initializing")
             initSerialization()
+            makeTestData()
 
             val outPath = Paths.get(outputDirectory)
             Files.createDirectories(outPath)
 
             val allHeaders = mutableListOf<String>()
-            generateClassesFor(listOf(WireTransaction::class.java, SignedTransaction::class.java)) { path, content ->
+            generateClassesFor(listOf(Company::class.java)) { path, content ->
                 val filePath = outPath.resolve(path)
                 Files.createDirectories(filePath.parent)
                 Files.write(filePath, content.toByteArray())
@@ -67,7 +90,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
                 allHeaders += path.toString()
             }
 
-            val uberHeader = allHeaders.map { "#include \"$it\"" }.sorted()
+            val uberHeader = listOf("#include \"corda-std-serializers.h\"") + allHeaders.map { "#include \"$it\"" }.sorted()
             val uberHeaderPath = outPath.resolve("all-messages.h")
             Files.write(uberHeaderPath, uberHeader)
             println("Generated $uberHeaderPath")
@@ -76,19 +99,6 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             e.printStackTrace()
             return 1
         }
-    }
-
-    private fun makeTestData() {
-        val zurich = City("Zurich")
-        val family = Family(
-                mapOf(
-                        "dad" to Person("Mike", 34),
-                        "mum" to Person("Angie", 26)
-                ),
-                "Hearn",
-                listOf(zurich)
-        )
-        File("/tmp/buf").writeBytes(family.serialize().bytes)
     }
 
     private val Type.baseClass: Class<*> get() = ((this as? ParameterizedType)?.rawType as? Class<*> ?: this as Class<*>)
@@ -136,7 +146,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             val type = workQ.pop()
             try {
                 val baseName: String = type.baseClass.name
-                val (code, dependencies, needsSpecialisationFor) = generateClassFor(type, serializerFactory, seenSoFar)
+                val (code, dependencies, needsSpecialisationFor) = generateClassFor(type, serializerFactory, seenSoFar) ?: continue
 
                 check(dependencies.none { it.baseClass.isArray }) {
                     dependencies
@@ -237,14 +247,20 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             return result
         }
 
-    private fun generateClassFor(type: Type, serializerFactory: SerializerFactory, seenSoFar: Set<String>): GenResult {
+    private fun generateClassFor(type: Type, serializerFactory: SerializerFactory, seenSoFar: Set<String>): GenResult? {
         // Get the serializer created by the serialization engine, and map it to C++.
         val amqpSerializer: AMQPSerializer<Any> = serializerFactory.get(type)
         if (amqpSerializer !is ObjectSerializer) {
             // Some serialisers are special and need to be hand coded.
-            val warning = "Need to write code for custom serializer '${amqpSerializer.type}' / ${amqpSerializer.typeDescriptor}"
-            println(warning)
-            return GenResult("// TODO: $warning", emptySet(), null)
+            when (amqpSerializer.type) {
+                Instant::class.java, PublicKey::class.java -> {
+                }
+                else -> {
+                    val warning = "Need to write code for custom serializer '${amqpSerializer.type}' / ${amqpSerializer.typeDescriptor}"
+                    println(warning)
+                }
+            }
+            return null
         }
 
         // Calculate the body of the class where field are declared and initialised in the constructor.
@@ -258,7 +274,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             val (declType, newDeps) = convertType(accessor.serializer.resolvedType, (accessor.serializer.propertyReader as? PublicPropertyReader)?.genericReturnType)
             dependencies += newDeps
             fieldDeclarations += "$declType $name;"
-            fieldInitializations += "corda::Parser::read_to(decoder, $name);"
+            fieldInitializations += "net::corda::Parser::read_to(decoder, $name);"
         }
 
         // We have fully specified generics here, as used in the parameter types e.g. kotlin.Pair<Person, Person>
@@ -290,7 +306,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
                     |    ${fieldDeclarations.joinToString(System.lineSeparator() + (" ".repeat(4)))}
                     |
                     |    explicit $undecoratedName(proton::codec::decoder &decoder) {
-                    |        corda::DescriptorGuard d(decoder, descriptor(), ${fieldDeclarations.size});
+                    |        net::corda::DescriptorGuard d(decoder, descriptor(), ${fieldDeclarations.size});
                     |        ${fieldInitializations.joinToString(System.lineSeparator() + (" ".repeat(8)))}
                     |    }
                     |
@@ -362,7 +378,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
                 else -> {
                     check(!resolved.baseClass.isArray) { "Unsupported array type: $resolved" }
                     dependencies += resolved
-                    "corda::ptr<${genericReturnType!!.cppName}>"
+                    "net::corda::ptr<${genericReturnType!!.cppName}>"
                 }
             }
         }
