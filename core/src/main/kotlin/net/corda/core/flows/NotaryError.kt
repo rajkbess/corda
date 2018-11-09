@@ -51,6 +51,14 @@ sealed class NotaryError {
     /** Occurs when the transaction sent for notarisation is assigned to a different notary identity. */
     object WrongNotary : NotaryError()
 
+    /**
+     * Occurs when the transaction sent for notarisation is tagged with different parameters than the ones considered as current for the network.
+     */
+    // TODO Parameters "fuzzy" checking
+    data class ParametersMismatch(val txParametersHash: SecureHash?, val notaryParametersHash: SecureHash): NotaryError() {
+        override fun toString() = "Transaction for notarisation was tagged with parameters with hash: $txParametersHash, but current network parameters are: $notaryParametersHash"
+    }
+
     /** Occurs when the notarisation request signature does not verify for the provided transaction. */
     data class RequestSignatureInvalid(val cause: Throwable) : NotaryError() {
         override fun toString() = "Request signature invalid: $cause"

@@ -188,7 +188,8 @@ private class WireTransactionSerializer : JsonSerializer<WireTransaction>() {
                 value.commands,
                 value.timeWindow,
                 value.attachments,
-                value.privacySalt
+                value.privacySalt,
+                value.networkParametersHash
         ))
     }
 }
@@ -202,7 +203,8 @@ private class WireTransactionDeserializer : JsonDeserializer<WireTransaction>() 
                 wrapper.commands,
                 wrapper.attachments,
                 wrapper.notary,
-                wrapper.timeWindow
+                wrapper.timeWindow,
+                networkParametersHash = wrapper.networkParametersHash
         )
         return WireTransaction(componentGroups, wrapper.privacySalt)
     }
@@ -215,7 +217,8 @@ private class WireTransactionJson(val id: SecureHash,
                                   val commands: List<Command<*>>,
                                   val timeWindow: TimeWindow?,
                                   val attachments: List<SecureHash>,
-                                  val privacySalt: PrivacySalt)
+                                  val privacySalt: PrivacySalt,
+                                  val networkParametersHash: SecureHash?)
 
 private interface TransactionStateMixin {
     @get:JsonTypeInfo(use = JsonTypeInfo.Id.CLASS)

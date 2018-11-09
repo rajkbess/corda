@@ -34,6 +34,8 @@ abstract class NotaryServiceFlow(val otherSideSession: FlowSession, val service:
             val parts = validateRequest(requestPayload)
             txId = parts.id
             checkNotary(parts.notary)
+            checkParametersHash(parts.networkParametersHash)
+            // TODO should it commit all parts?
             service.commitInputStates(parts.inputs, txId, otherSideSession.counterparty, requestPayload.requestSignature, parts.timestamp, parts.references)
             signTransactionAndSendResponse(txId)
         } catch (e: NotaryInternalException) {
@@ -59,6 +61,21 @@ abstract class NotaryServiceFlow(val otherSideSession: FlowSession, val service:
     @Suspendable
     protected abstract fun validateRequest(requestPayload: NotarisationPayload): TransactionParts
 
+    /**
+     * Check that network parameters hash on this transaction is the current hash for the network.
+     */
+     // TODO Implement network parameters fuzzy checking. By design in Corda network we have propagation time delay.
+     //     We will never end up in perfect synchronization with all the nodes. However, network parameters update process
+     //     lets us predict what is the reasonable time window for changing parameters on most of the nodes.
+    @Suspendable
+    protected fun checkParametersHash(networkParametersHash: SecureHash?) {
+        if (networkParametersHash == null && serviceHub.networkParameters.minimumPlatformVersion < 4) return
+        val notaryParametersHash = serviceHub.networkParametersStorage.currentParametersHash
+        if (notaryParametersHash != networkParametersHash) {
+            throw NotaryInternalException(NotaryError.ParametersMismatch(networkParametersHash, notaryParametersHash))
+        }
+    }
+
     /** Verifies that the correct notarisation request was signed by the counterparty. */
     protected fun validateRequestSignature(request: NotarisationRequest, signature: NotarisationRequestSignature) {
         val requestingParty = otherSideSession.counterparty
@@ -70,6 +87,15 @@ abstract class NotaryServiceFlow(val otherSideSession: FlowSession, val service:
     protected fun checkNotary(notary: Party?) {
         if (notary?.owningKey != service.notaryIdentityKey) {
             throw NotaryInternalException(NotaryError.WrongNotary)
+        }
+    }
+
+    @Suspendable
+    protected fun checkParametersPresent(networkParametersHash: SecureHash?) {
+        if (serviceHub.networkParameters.minimumPlatformVersion >= 4 && networkParametersHash == null) {
+            throw NotaryInternalException(NotaryError.TransactionInvalid(
+                    IllegalArgumentException("Notary received transaction without network parameters hash")
+            ))
         }
     }
 
@@ -88,10 +114,11 @@ abstract class NotaryServiceFlow(val otherSideSession: FlowSession, val service:
             val inputs: List<StateRef>,
             val timestamp: TimeWindow?,
             val notary: Party?,
-            val references: List<StateRef> = emptyList()
+            val references: List<StateRef> = emptyList(),
+            val networkParametersHash: SecureHash?
     ) {
-        fun copy(id: SecureHash, inputs: List<StateRef>, timestamp: TimeWindow?, notary: Party?): TransactionParts {
-            return TransactionParts(id, inputs, timestamp, notary, references)
+        fun copy(id: SecureHash, inputs: List<StateRef>, timestamp: TimeWindow?, notary: Party?, networkParametersHash: SecureHash?): TransactionParts {
+            return TransactionParts(id, inputs, timestamp, notary, references, networkParametersHash)
         }
     }
 }

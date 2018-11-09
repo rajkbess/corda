@@ -192,6 +192,16 @@ class ResolveTransactionsFlowTest {
         assertFailsWith<FetchDataFlow.IllegalTransactionRequest> { future.getOrThrow() }
     }
 
+    @Test
+    fun `transaction chain out of order parameters`() {
+        // TODO
+    }
+
+    @Test
+    fun `transaction chain in order parameters but topologically out of order`() {
+        // TODO tree 8 in root, 6,5,7,4 in children
+    }
+
     // DOCSTART 2
     private fun makeTransactions(signFirstTX: Boolean = true, withAttachment: SecureHash? = null): Pair<SignedTransaction, SignedTransaction> {
         // Make a chain of custody of dummy states and insert into node A.

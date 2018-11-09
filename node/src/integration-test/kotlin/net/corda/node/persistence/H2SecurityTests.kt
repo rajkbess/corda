@@ -68,7 +68,7 @@ class H2SecurityTests {
 
     @Test
     fun `h2 server on external host IP requires non-blank database password`() {
-        driver(DriverParameters(inMemoryDB = false, startNodesInProcess = isQuasarAgentSpecified(), notarySpecs = emptyList())) {
+        driver(DriverParameters(inMemoryDB = false, startNodesInProcess = true, notarySpecs = emptyList())) {
             assertFailsWith(CouldNotCreateDataSourceException::class) {
                 startNode(customOverrides = mapOf(h2AddressKey to "${InetAddress.getLocalHost().hostAddress}:${getFreePort()}",
                         dbPasswordKey to " ")).getOrThrow()

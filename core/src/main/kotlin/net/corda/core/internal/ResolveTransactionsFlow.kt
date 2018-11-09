@@ -6,6 +6,7 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowException
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.FlowSession
+import net.corda.core.node.NetworkParameters
 import net.corda.core.node.StatesToRecord
 import net.corda.core.serialization.CordaSerializable
 import net.corda.core.transactions.ContractUpgradeWireTransaction
@@ -23,6 +24,7 @@ import kotlin.math.min
  *
  * @return a list of verified [SignedTransaction] objects, in a depth-first order.
  */
+// TODO Implement checking of ordering of network parameters in transaction chain
 @DeleteForDJVM
 class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
                               private val otherSide: FlowSession) : FlowLogic<Unit>() {
@@ -62,6 +64,7 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
 
     /** Transaction to fetch attachments for. */
     private var signedTransaction: SignedTransaction? = null
+//    private val rootParametersHash: SecureHash? get() = signedTransaction?.getParametersHash() // TODO when signed transaction is null
 
     // TODO: Figure out a more appropriate DOS limit here, 5000 is simply a very bad guess.
     /** The maximum number of transactions this flow will try to download before bailing out. */
@@ -75,12 +78,24 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
     @Throws(FetchDataFlow.HashNotFound::class, FetchDataFlow.IllegalTransactionRequest::class)
     override fun call() {
         val newTxns = ArrayList<SignedTransaction>(txHashes.size)
+//        //todo check all params
+//        val resolvedRootParams = serviceHub.networkParametersStorage.readParametersFromHash(rootParametersHash)
+//        newTxns.forEach { newStx ->
+//            val paramsHash = newStx.getParametersHash()
+//            val resolvedParams = serviceHub.networkParametersStorage.readParametersFromHash(paramsHash)
+//            if (resolvedParams.epoch > resolvedRootParams.epoch) {
+//                throw IllegalArgumentException("Network parameters are not ordered in the transaction graph " +
+//                        "for dependency transaction: ${newStx.id} and depender transaction: ${signedTransaction?.id}") // TODO what exception
+//            }
+//        }
+
         // Start fetching data.
         for (pageNumber in 0..(txHashes.size - 1) / RESOLUTION_PAGE_SIZE) {
             val page = page(pageNumber, RESOLUTION_PAGE_SIZE)
 
             newTxns += downloadDependencies(page)
-            val txsWithMissingAttachments = if (pageNumber == 0) signedTransaction?.let { newTxns + it } ?: newTxns else newTxns
+            val txsWithMissingAttachments = if (pageNumber == 0) signedTransaction?.let { newTxns + it }
+                    ?: newTxns else newTxns
             fetchMissingAttachments(txsWithMissingAttachments)
         }
         otherSide.send(FetchDataFlow.Request.End)
@@ -96,6 +111,20 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
             serviceHub.recordTransactions(StatesToRecord.NONE, listOf(it))
         }
     }
+
+    // TODO
+//    private fun SignedTransaction.getParametersHash(): SecureHash = networkParametersHash
+//            ?: serviceHub.networkParametersStorage.defaultParametersHash
+//
+//    private fun SecureHash.getParameters(): NetworkParameters = serviceHub.networkParametersStorage.let {
+//        it.readParametersFromHash(this) ?: it.defaultParameters
+//    }
+//
+//    private fun fetchAndCheckParameters(rootParamsHash: SecureHash, dependentHashes: List<SecureHash>) {
+//        val defaultParameters = serviceHub.networkParametersStorage.defaultParameters
+//        val rootEpoch = rootParamsHash.getParameters()
+//
+//    }
 
     private fun page(pageNumber: Int, pageSize: Int): Set<SecureHash> {
         val offset = pageNumber * pageSize
@@ -171,6 +200,7 @@ class ResolveTransactionsFlow(txHashesArg: Set<SecureHash>,
             }
         }
         val missingAttachments = attachments.filter { serviceHub.attachments.openAttachment(it) == null }
+        // TODO: We could fetch parameters using attachments too and put them into the NetworkParametersStorage after signature checking.
         if (missingAttachments.isNotEmpty())
             subFlow(FetchAttachmentsFlow(missingAttachments.toSet(), otherSide))
     }

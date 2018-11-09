@@ -208,6 +208,11 @@ class BFTNotaryServiceTests {
         }
     }
 
+    @Test
+    fun `reject transaction with wrong network parameters tag`() {
+        //TODO
+    }
+
     private fun verifySignatures(signatures: List<TransactionSignature>, txId: SecureHash) {
         notary.owningKey.isFulfilledBy(signatures.map { it.by })
         signatures.forEach { it.verify(txId) }

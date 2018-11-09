@@ -200,7 +200,9 @@ class TimedFlowTests {
             } else {
                 logger.info("Processing")
             }
-            return TransactionParts(stx.id, stx.inputs, stx.tx.timeWindow, stx.notary)
+            val parametersHash = stx.networkParametersHash
+            checkParametersPresent(parametersHash)
+            return TransactionParts(stx.id, stx.inputs, stx.tx.timeWindow, stx.notary, networkParametersHash = parametersHash)
         }
     }
 }

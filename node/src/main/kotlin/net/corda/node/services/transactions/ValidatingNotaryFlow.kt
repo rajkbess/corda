@@ -35,10 +35,12 @@ class ValidatingNotaryFlow(otherSideSession: FlowSession, service: TrustedAuthor
             validateRequestSignature(NotarisationRequest(stx.inputs, stx.id), requestPayload.requestSignature)
             val notary = stx.notary
             checkNotary(notary)
+            val networkParametersHash = stx.networkParametersHash
+            checkParametersPresent(networkParametersHash)
             resolveAndContractVerify(stx)
             verifySignatures(stx)
             val timeWindow: TimeWindow? = if (stx.coreTransaction is WireTransaction) stx.tx.timeWindow else null
-            return TransactionParts(stx.id, stx.inputs, timeWindow, notary!!, stx.references)
+            return TransactionParts(stx.id, stx.inputs, timeWindow, notary!!, stx.references, networkParametersHash)
         } catch (e: Exception) {
             throw when (e) {
                 is TransactionVerificationException,
