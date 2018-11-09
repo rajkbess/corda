@@ -67,14 +67,16 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
     @CommandLine.Parameters(index = "0", paramLabel = "OUTPUT", description = ["Path to where the output files are generated"], defaultValue = "out")
     lateinit var outputDirectory: String
 
-    private val Type.cppName: String
-        get() {
-            return this.typeName.replace(".", "::")
-        }
+    @CommandLine.Parameters(index = "1", arity = "1..*", paramLabel = "CLASS-NAME", description = ["A list of fully qualified Java class names to generate"])
+    lateinit var classNames: List<String>
+
+    private fun Type.getCppName() = this.typeName.replace(".", "::")
 
     override fun runProgram(): Int {
+        val classes = classNames.map { Class.forName(it) }
+
         try {
-            println("Initializing")
+            println("Initializing ...")
             initSerialization()
             makeTestData()
 
@@ -82,7 +84,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             Files.createDirectories(outPath)
 
             val allHeaders = mutableListOf<String>()
-            generateClassesFor(listOf(Company::class.java)) { path, content ->
+            generateClassesFor(classes) { path, content ->
                 val filePath = outPath.resolve(path)
                 Files.createDirectories(filePath.parent)
                 Files.write(filePath, content.toByteArray())
@@ -117,7 +119,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
         //
         // The factory lets us look up serializers, which gives us the fingerprints we will use to check the format
         // of the data we're decoding matches the generated code. This version of C++ support doesn't do evolution.
-        val serializerFactory: SerializerFactory = Scheme.getSerializerFactory(SerializationFactory.defaultFactory.defaultContext)
+        val serializerFactory: SerializerFactory = Scheme.getSerializerFactory(AMQP_STORAGE_CONTEXT)
         // We don't want to generate the same code twice, so we keep track of the classes we already made here.
         // This set contains type names with erased type parameters in C++ form, e.g. kotlin::Pair<A, B>, not resolved
         // type parameters.
@@ -159,7 +161,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
                         .toMutableSet()
 
                 if (needsSpecialisationFor != null) {
-                    val specialization = """template<> const std::string ${type.cppName}::descriptor() { return "$needsSpecialisationFor"; }"""
+                    val specialization = """template<> const std::string ${type.getCppName()}::descriptor() { return "$needsSpecialisationFor"; }"""
                     descriptorSpecializations.getOrPut(baseName) { LinkedHashSet() } += specialization
                     predeclarationsNeeded += type.allMentionedClasses
                 }
@@ -274,7 +276,11 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             val (declType, newDeps) = convertType(accessor.serializer.resolvedType, (accessor.serializer.propertyReader as? PublicPropertyReader)?.genericReturnType)
             dependencies += newDeps
             fieldDeclarations += "$declType $name;"
-            fieldInitializations += "net::corda::Parser::read_to(decoder, $name);"
+            val readTo = "net::corda::Parser::read_to(decoder, $name);"
+            fieldInitializations += if (!accessor.serializer.mandatory)
+                "if (decoder.next_type() != proton::NULL_TYPE) $readTo else decoder.next();"
+            else
+                readTo
         }
 
         // We have fully specified generics here, as used in the parameter types e.g. kotlin.Pair<Person, Person>
@@ -288,7 +294,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
             return GenResult(null, dependencies, if (isGeneric) descriptorSymbol else null)
 
         // Calculate the right namespace{} blocks.
-        val nameComponents = type.cppName.substringBefore('<').split("::")
+        val nameComponents = type.getCppName().substringBefore('<').split("::")
         val (namespaceOpenings, namespaceClosings) = namespaceBoilerplate(nameComponents)
         val undecoratedName = nameComponents.last()
 
@@ -306,7 +312,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
                     |    ${fieldDeclarations.joinToString(System.lineSeparator() + (" ".repeat(4)))}
                     |
                     |    explicit $undecoratedName(proton::codec::decoder &decoder) {
-                    |        net::corda::DescriptorGuard d(decoder, descriptor(), ${fieldDeclarations.size});
+                    |        net::corda::CompositeTypeGuard guard(decoder, descriptor(), ${fieldDeclarations.size});
                     |        ${fieldInitializations.joinToString(System.lineSeparator() + (" ".repeat(8)))}
                     |    }
                     |
@@ -378,7 +384,7 @@ class GenerateCPPHeaders : CordaCliWrapper("generate-cpp-headers", "Generate sou
                 else -> {
                     check(!resolved.baseClass.isArray) { "Unsupported array type: $resolved" }
                     dependencies += resolved
-                    "net::corda::ptr<${genericReturnType!!.cppName}>"
+                    "net::corda::ptr<${genericReturnType!!.getCppName()}>"
                 }
             }
         }
