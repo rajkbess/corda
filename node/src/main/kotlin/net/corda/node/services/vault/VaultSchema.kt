@@ -13,6 +13,7 @@ import net.corda.core.node.services.Vault
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.PersistentStateRef
+import net.corda.core.schemas.StatePersistable
 import net.corda.core.serialization.CordaSerializable
 import net.corda.core.utilities.OpaqueBytes
 import org.hibernate.annotations.Cascade
@@ -182,7 +183,7 @@ object VaultSchemaV1 : MappedSchema(
 
             @Column(name = "x500_name", nullable = true)
             var x500Name: AbstractParty? = null
-    ) {
+    ) : StatePersistable {
         constructor(stateRef: PersistentStateRef, abstractParty: AbstractParty)
                 : this(null, stateRef, abstractParty.owningKey.toStringShort(), abstractParty)
     }

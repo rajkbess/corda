@@ -17,6 +17,7 @@ import net.corda.core.node.services.vault.NullOperator.NOT_NULL
 import net.corda.core.node.services.vault.QueryCriteria.CommonQueryCriteria
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.PersistentStateRef
+import net.corda.core.schemas.StatePersistable
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.trace
@@ -222,7 +223,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
     }
 
     // incrementally build list of root entities (for later use in Sort parsing)
-    private val rootEntities = mutableMapOf<Class<*>, Root<*>>(Pair(VaultSchemaV1.VaultStates::class.java, vaultStates))
+    private val rootEntities = mutableMapOf<Class<out StatePersistable>, Root<*>>(Pair(VaultSchemaV1.VaultStates::class.java, vaultStates))
     private val aggregateExpressions = mutableListOf<Expression<*>>()
     private val commonPredicates = mutableMapOf<Pair<String, Operator>, Predicate>()   // schema attribute Name, operator -> predicate
     private val constraintPredicates = mutableSetOf<Predicate>()
@@ -380,12 +381,11 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         // ensure we re-use any existing instance of the same root entity
         val entityStateClass = VaultSchemaV1.VaultFungibleStates::class.java
-        val vaultFungibleStates =
-                rootEntities.getOrElse(entityStateClass) {
-                    val entityRoot = criteriaQuery.from(entityStateClass)
-                    rootEntities[entityStateClass] = entityRoot
-                    entityRoot
-                }
+        val vaultFungibleStates = rootEntities.getOrElse(entityStateClass) {
+            val entityRoot = criteriaQuery.from(entityStateClass)
+            rootEntities[entityStateClass] = entityRoot
+            entityRoot
+        }
 
         val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), vaultFungibleStates.get<PersistentStateRef>("stateRef"))
         predicateSet.add(joinPredicate)
@@ -423,12 +423,11 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         // ensure we re-use any existing instance of the same root entity
         val entityStateClass = VaultSchemaV1.VaultLinearStates::class.java
-        val vaultLinearStates =
-                rootEntities.getOrElse(entityStateClass) {
-                    val entityRoot = criteriaQuery.from(entityStateClass)
-                    rootEntities[entityStateClass] = entityRoot
-                    entityRoot
-                }
+        val vaultLinearStates = rootEntities.getOrElse(entityStateClass) {
+            val entityRoot = criteriaQuery.from(entityStateClass)
+            rootEntities[entityStateClass] = entityRoot
+            entityRoot
+        }
 
         val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), vaultLinearStates.get<PersistentStateRef>("stateRef"))
         predicateSet.add(joinPredicate)
@@ -457,12 +456,11 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         try {
             // ensure we re-use any existing instance of the same root entity
-            val entityRoot =
-                    rootEntities.getOrElse(entityStateClass) {
-                        val entityRoot = criteriaQuery.from(entityStateClass)
-                        rootEntities[entityStateClass] = entityRoot
-                        entityRoot
-                    }
+            val entityRoot = rootEntities.getOrElse(entityStateClass) {
+                val entityRoot = criteriaQuery.from(entityStateClass)
+                rootEntities[entityStateClass] = entityRoot
+                entityRoot
+            }
 
             val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<PersistentStateRef>("stateRef"))
             predicateSet.add(joinPredicate)
@@ -584,14 +582,15 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         // Participants.
         criteria.participants?.let {
             val participants = criteria.participants!!
+            // Get the persistent party entity.
             val persistentPartyEntity = VaultSchemaV1.PersistentParty::class.java
-            // TODO: This is duplicated code. Refactor.
             val entityRoot = rootEntities.getOrElse(persistentPartyEntity) {
                 val entityRoot = criteriaQuery.from(persistentPartyEntity)
                 rootEntities[persistentPartyEntity] = entityRoot
                 entityRoot
             }
             val predicateID = Pair(VaultSchemaV1.PersistentParty::x500Name.name, IN)
+            // Add a new predicate or update th existing one.
             if (commonPredicates.containsKey(predicateID)) {
                 val existingParticipants = (commonPredicates[predicateID]!!.expressions[0] as InPredicate<*>).values.map {
                     (it as LiteralExpression).literal
