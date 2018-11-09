@@ -27,10 +27,17 @@ import java.util.*
 
 fun main(args: Array<String>) = GenerateSerializationLibs().start(args)
 
-@CordaSerializable data class Village(val name: String)
-@CordaSerializable data class City(val name: String)
-@CordaSerializable data class Person<T : Any>(val name: String, val age: Int, val bornLived: Pair<T, T>)
-@CordaSerializable data class Family(val parents: Pair<Person<City>, Person<Village>>, val lastName: String, val livingIn: City)
+@CordaSerializable
+data class Village(val name: String)
+
+@CordaSerializable
+data class City(val name: String)
+
+@CordaSerializable
+data class Person(val name: String, val age: Int)
+
+@CordaSerializable
+data class Family(val parents: List<Person>, val lastName: String, val livingIn: City)
 
 /**
  * Generates C++ source code that deserialises types, based on types discovered using classpath scanning.
@@ -39,9 +46,10 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
     @CommandLine.Parameters(index = "0", paramLabel = "OUTPUT", description = ["Path to where the output files are generated"], defaultValue = "out")
     lateinit var outputDirectory: String
 
-    private val Type.cppName: String get() {
-        return this.typeName.replace(".", "::")
-    }
+    private val Type.cppName: String
+        get() {
+            return this.typeName.replace(".", "::")
+        }
 
     override fun runProgram(): Int {
         initSerialization()
@@ -68,17 +76,14 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
     }
 
     private fun makeTestData() {
-        val manchester = City("Manchester")
         val zurich = City("Zurich")
-        val hannover = Village("Hannover")
-        val lausanne = Village("Lausanne")
-        val geneva = City("Geneva")
         val family = Family(
-                Pair(
-                        Person("Mike", 34, manchester to zurich),
-                        Person("Angie", 26, hannover to lausanne)),
+                listOf(
+                        Person("Mike", 34),
+                        Person("Angie", 26)
+                ),
                 "Hearn",
-                geneva
+                zurich
         )
         File("/tmp/buf").writeBytes(family.serialize().bytes)
     }
@@ -212,27 +217,30 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
     }
 
     // Foo<Bar, Baz<Boz>> -> [Foo, Bar, Baz, Boz]
-    private val Type.allMentionedClasses: Set<Class<*>> get() {
-        val result = HashSet<Class<*>>()
+    private val Type.allMentionedClasses: Set<Class<*>>
+        get() {
+            val result = HashSet<Class<*>>()
 
-        fun recurse(t: Type) {
-            result += t.baseClass
-            if (t !is ParameterizedType) return
-            for (argument in t.actualTypeArguments) {
-                recurse(argument)
+            fun recurse(t: Type) {
+                result += t.baseClass
+                if (t !is ParameterizedType) return
+                for (argument in t.actualTypeArguments) {
+                    recurse(argument)
+                }
             }
-        }
 
-        recurse(this)
-        return result
-    }
+            recurse(this)
+            return result
+        }
 
     private fun generateClassFor(type: Type, serializerFactory: SerializerFactory, seenSoFar: Set<String>): GenResult {
         // Get the serializer created by the serialization engine, and map it to C++.
         val amqpSerializer: AMQPSerializer<Any> = serializerFactory.get(type)
         if (amqpSerializer !is ObjectSerializer) {
             // Some serialisers are special and need to be hand coded.
-            return GenResult("// TODO: Need to write code for custom serializer ${amqpSerializer.type} / ${amqpSerializer.typeDescriptor}", emptySet(), null)
+            val warning = "Need to write code for custom serializer ${amqpSerializer.type} / ${amqpSerializer.typeDescriptor}"
+            println(warning)
+            return GenResult("// TODO: $warning", emptySet(), null)
         }
 
         // Calculate the body of the class where field are declared and initialised in the constructor.
@@ -269,15 +277,19 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                 else -> {
                     val resolved: Type = accessor.serializer.resolvedType
                     val genericReturnType = (accessor.serializer.propertyReader as PublicPropertyReader).genericReturnType
-                    // The resolved type may be a Class directly, or it may be a generic type, in which case we need to
-                    // erase the generics to generate the code.
-                    dependencies += resolved
-                    "std::unique_ptr<${genericReturnType.cppName}>"
+                    if (resolved.baseClass.name == "java.util.List") {
+                        val innerType: Type = (resolved as ParameterizedType).actualTypeArguments[0]
+                        dependencies += innerType
+                        "std::list<corda::ptr<${innerType.cppName}>>"
+                    } else {
+                        dependencies += resolved
+                        "corda::ptr<${genericReturnType.cppName}>"
+                    }
                 }
             }
 
             fieldDeclarations += "$declType $name;"
-            fieldInitializations += "::corda::Parser::read_to(decoder, $name);"
+            fieldInitializations += "corda::Parser::read_to(decoder, $name);"
         }
 
         // We have fully specified generics here, as used in the parameter types e.g. kotlin.Pair<Person, Person>
@@ -309,7 +321,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                     |    ${fieldDeclarations.joinToString(System.lineSeparator() + (" ".repeat(4)))}
                     |
                     |    explicit $undecoratedName(proton::codec::decoder &decoder) {
-                    |        ::corda::DescriptorGuard d(decoder, descriptor(), ${fieldDeclarations.size});
+                    |        corda::DescriptorGuard d(decoder, descriptor(), ${fieldDeclarations.size});
                     |        ${fieldInitializations.joinToString(System.lineSeparator() + (" ".repeat(8)))}
                     |    }
                     |
