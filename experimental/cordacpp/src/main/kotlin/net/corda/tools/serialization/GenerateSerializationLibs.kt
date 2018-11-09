@@ -8,6 +8,8 @@ import net.corda.core.serialization.SerializationFactory
 import net.corda.core.serialization.internal.SerializationEnvironment
 import net.corda.core.serialization.internal._contextSerializationEnv
 import net.corda.core.serialization.serialize
+import net.corda.core.transactions.SignedTransaction
+import net.corda.core.transactions.WireTransaction
 import net.corda.serialization.internal.AMQP_P2P_CONTEXT
 import net.corda.serialization.internal.AMQP_STORAGE_CONTEXT
 import net.corda.serialization.internal.CordaSerializationMagic
@@ -37,7 +39,7 @@ data class City(val name: String)
 data class Person(val name: String, val age: Int)
 
 @CordaSerializable
-data class Family(val parents: List<Person>, val lastName: String, val livingIn: City)
+data class Family(val parents: Map<String, Person>, val lastName: String, val livingIn: List<City>)
 
 /**
  * Generates C++ source code that deserialises types, based on types discovered using classpath scanning.
@@ -52,38 +54,42 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
         }
 
     override fun runProgram(): Int {
-        initSerialization()
+        try {
+            initSerialization()
+            makeTestData()
 
-        makeTestData()
+            val outPath = Paths.get(outputDirectory)
+            Files.createDirectories(outPath)
 
-        val outPath = Paths.get(outputDirectory)
-        Files.createDirectories(outPath)
+            val allHeaders = mutableListOf<String>()
+            generateClassesFor(listOf(Family::class.java)) { path, content ->
+                val filePath = outPath.resolve(path)
+                Files.createDirectories(filePath.parent)
+                Files.write(filePath, content.toByteArray())
+                println("Generated $filePath")
+                allHeaders += path.toString()
+            }
 
-        val allHeaders = mutableListOf<String>()
-        generateClassesFor(listOf(Family::class.java, City::class.java, Village::class.java)) { path, content ->
-            val filePath = outPath.resolve(path)
-            Files.createDirectories(filePath.parent)
-            Files.write(filePath, content.toByteArray())
-            println("Generated $filePath")
-            allHeaders += path.toString()
+            val uberHeader = allHeaders.map { "#include \"$it\"" }
+            val uberHeaderPath = outPath.resolve("all-messages.h")
+            Files.write(uberHeaderPath, uberHeader)
+            println("Generated $uberHeaderPath")
+            return 0
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return 1
         }
-
-        val uberHeader = allHeaders.map { "#include \"$it\"" }
-        val uberHeaderPath = outPath.resolve("all-messages.h")
-        Files.write(uberHeaderPath, uberHeader)
-        println("Generated $uberHeaderPath")
-        return 0
     }
 
     private fun makeTestData() {
         val zurich = City("Zurich")
         val family = Family(
-                listOf(
-                        Person("Mike", 34),
-                        Person("Angie", 26)
+                mapOf(
+                        "dad" to Person("Mike", 34),
+                        "mum" to Person("Angie", 26)
                 ),
                 "Hearn",
-                zurich
+                listOf(zurich)
         )
         File("/tmp/buf").writeBytes(family.serialize().bytes)
     }
@@ -134,7 +140,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
         while (workQ.isNotEmpty()) {
             val type = workQ.pop()
             try {
-                check(!type.baseClass.isArray)
+                check(!type.baseClass.isArray) { "$type is an array" }
                 val baseName: String = type.baseClass.name
                 val (code, dependencies, needsSpecialisationFor) = generateClassFor(type, serializerFactory, seenSoFar)
 
@@ -211,7 +217,7 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                 val params = needed.baseClass.typeParameters
                 predeclaration.appendln("${templateHeader(params)}class ${needed.baseClass.simpleName};")
             }
-            predeclaration.append(closings)
+            predeclaration.appendln(closings)
         }
         return predeclaration.toString()
     }
@@ -251,43 +257,8 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
         for (accessor in amqpSerializer.propertySerializers.serializationOrder) {
             val javaName = accessor.serializer.name
             val name = javaToCPPName(javaName)
-            val declType = when (accessor.serializer.type) {
-                // AMQP type to C++ type. See SerializerFactory.primitiveTypeNames and https://qpid.apache.org/releases/qpid-proton-0.26.0/proton/cpp/api/types_page.html
-                "char" -> "char"
-                "boolean" -> "bool"
-                "byte" -> "int8_t"
-                "ubyte" -> "uint8_t"
-                "short" -> "int16_t"
-                "ushort" -> "uint16_t"
-                "int" -> "int32_t"
-                "uint" -> "uint32_t"
-                "long" -> "int64_t"
-                "ulong" -> "uint64_t"
-                "float" -> "float"
-                "double" -> "double"
-                "decimal32" -> "proton::decimal32"
-                "decimal64" -> "proton::decimal64"
-                "decimal128" -> "proton::decimal128"
-                "timestamp" -> "proton::timestamp"
-                "uuid" -> "proton::uuid"
-                "binary" -> "proton::binary"
-                "string" -> "std::string"
-                "symbol" -> "proton::symbol"
-
-                else -> {
-                    val resolved: Type = accessor.serializer.resolvedType
-                    val genericReturnType = (accessor.serializer.propertyReader as PublicPropertyReader).genericReturnType
-                    if (resolved.baseClass.name == "java.util.List") {
-                        val innerType: Type = (resolved as ParameterizedType).actualTypeArguments[0]
-                        dependencies += innerType
-                        "std::list<corda::ptr<${innerType.cppName}>>"
-                    } else {
-                        dependencies += resolved
-                        "corda::ptr<${genericReturnType.cppName}>"
-                    }
-                }
-            }
-
+            val (declType, newDeps) = convertType(accessor.serializer.resolvedType, (accessor.serializer.propertyReader as? PublicPropertyReader)?.genericReturnType)
+            dependencies += newDeps
             fieldDeclarations += "$declType $name;"
             fieldInitializations += "corda::Parser::read_to(decoder, $name);"
         }
@@ -330,6 +301,73 @@ class GenerateSerializationLibs : CordaCliWrapper("generate-serialization-libs",
                     |
                     |$namespaceClosings
                 """.trimMargin(), dependencies, if (isGeneric) descriptorSymbol else null)
+    }
+
+    // Java type to C++ type. See SerializerFactory.primitiveTypeNames and https://qpid.apache.org/releases/qpid-proton-0.26.0/proton/cpp/api/types_page.html
+    private fun convertType(resolved: Type, genericReturnType: Type?): Pair<String, Set<Type>> {
+        val dependencies = mutableSetOf<Type>()
+        val cppType = when (resolved.typeName) {
+            // Primitives.
+            "char" -> "char"
+            "boolean" -> "bool"
+            "byte" -> "int8_t"
+            "short" -> "int16_t"
+            "int" -> "int32_t"
+            "long" -> "int64_t"
+            "float" -> "float"
+            "double" -> "double"
+
+            // Boxed types.
+            "java.lang.Character" -> "char"
+            "java.lang.Boolean" -> "bool"
+            "java.lang.Byte" -> "int8_t"
+            "java.lang.Short" -> "int16_t"
+            "java.lang.Integer" -> "int32_t"
+            "java.lang.Long" -> "int64_t"
+            "java.lang.Float" -> "float"
+            "java.lang.Double" -> "double"
+
+            // AMQP specific types.
+            "org.apache.qpid.proton.amqp.UnsignedByte" -> "uint8_t"
+            "org.apache.qpid.proton.amqp.UnsignedShort" -> "uint16_t"
+            "org.apache.qpid.proton.amqp.UnsignedInt" -> "uint32_t"
+            "org.apache.qpid.proton.amqp.UnsignedLong" -> "uint64_t"
+            "org.apache.qpid.proton.amqp.Decimal32" -> "proton::decimal32"
+            "org.apache.qpid.proton.amqp.Decimal64" -> "proton::decimal64"
+            "org.apache.qpid.proton.amqp.Decimal128" -> "proton::decimal128"
+            "org.apache.qpid.proton.amqp.Symbol" -> "proton::symbol"
+
+            // Utility types.
+            "java.util.Date" -> "proton::timestamp"
+            "java.util.UUID" -> "proton::uuid"
+            ByteArray::class.java.name -> "proton::binary"
+            "java.lang.String" -> "std::string"
+
+            // Classes, containers and other custom types.
+            else -> when (resolved.baseClass.name) {
+                "java.util.List" -> {
+                    val innerType: Type = (resolved as ParameterizedType).actualTypeArguments[0]
+                    dependencies += innerType
+                    //val (innerName, innerDeps) = convertType()
+                    "std::list<corda::ptr<${innerType.cppName}>>"
+                }
+                "java.util.Map" -> {
+                    resolved as ParameterizedType
+                    val keyType: Type = resolved.actualTypeArguments[0]
+                    val valueType: Type = resolved.actualTypeArguments[1]
+                    val (cppKeyType, extraDeps1) = convertType(keyType, keyType)
+                    dependencies += extraDeps1
+                    val (cppValueType, extraDeps2) = convertType(valueType, valueType)
+                    dependencies += extraDeps2
+                    "std::map<$cppKeyType, $cppValueType>"
+                }
+                else -> {
+                    dependencies += resolved
+                    "corda::ptr<${genericReturnType!!.cppName}>"
+                }
+            }
+        }
+        return Pair(cppType, dependencies)
     }
 
     private fun javaToCPPName(javaName: String): String {
