@@ -227,7 +227,6 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
     private val aggregateExpressions = mutableListOf<Expression<*>>()
     private val commonPredicates = mutableMapOf<Pair<String, Operator>, Predicate>()   // schema attribute Name, operator -> predicate
     private val constraintPredicates = mutableSetOf<Predicate>()
-    private val joinPredicates = mutableSetOf<Predicate>()
 
     var stateTypes: Vault.StateStatus = Vault.StateStatus.UNCONSUMED
 
@@ -494,7 +493,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
                 else
                     aggregateExpressions
         criteriaQuery.multiselect(selections)
-        val combinedPredicates = commonPredicates.values + predicateSet + constraintPredicates + joinPredicates
+        val combinedPredicates = commonPredicates.values + predicateSet + constraintPredicates
         criteriaQuery.where(*combinedPredicates.toTypedArray())
 
         return predicateSet
@@ -579,6 +578,8 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
             }
         }
 
+        val predicateSet = mutableSetOf<Predicate>()
+
         // Participants.
         criteria.participants?.let {
             val participants = criteria.participants!!
@@ -602,12 +603,12 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
             } else {
                 // Add the join predicate. Only need to do this once.
                 val stateRef = criteriaBuilder.equal(vaultStates.get<VaultSchemaV1.VaultStates>("stateRef"), entityRoot.get<VaultSchemaV1.PersistentParty>("stateRef"))
-                joinPredicates.add(stateRef)
+                predicateSet.add(stateRef)
                 commonPredicates[predicateID] = criteriaBuilder.and(entityRoot.get<VaultSchemaV1.PersistentParty>("x500Name").`in`(participants))
             }
         }
 
-         return emptySet()
+         return predicateSet
     }
 
     private fun parse(sorting: Sort) {

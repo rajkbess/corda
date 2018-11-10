@@ -99,8 +99,8 @@ sealed class QueryCriteria : GenericQueryCriteria<QueryCriteria, IQueryCriteriaP
             override val participants: List<AbstractParty>? = null
     ) : CommonQueryCriteria() {
         override fun visit(parser: IQueryCriteriaParser): Collection<Predicate> {
-            super.visit(parser)
-            return parser.parseCriteria(this)
+            val predicates = super.visit(parser)
+            return parser.parseCriteria(this) + predicates
         }
 
         fun copy(
@@ -149,8 +149,8 @@ sealed class QueryCriteria : GenericQueryCriteria<QueryCriteria, IQueryCriteriaP
         ) : this(participants, linearId?.map { it.id }, linearId?.mapNotNull { it.externalId }, status, contractStateTypes)
 
         override fun visit(parser: IQueryCriteriaParser): Collection<Predicate> {
-            super.visit(parser)
-            return parser.parseCriteria(this)
+            val predicates = super.visit(parser)
+            return parser.parseCriteria(this) + predicates
         }
 
         fun copy(
@@ -181,8 +181,8 @@ sealed class QueryCriteria : GenericQueryCriteria<QueryCriteria, IQueryCriteriaP
             override val relevancyStatus: Vault.RelevancyStatus = Vault.RelevancyStatus.ALL
     ) : CommonQueryCriteria() {
         override fun visit(parser: IQueryCriteriaParser): Collection<Predicate> {
-            super.visit(parser)
-            return parser.parseCriteria(this)
+            val predicates = super.visit(parser)
+            return parser.parseCriteria(this) + predicates
         }
     }
 
@@ -200,8 +200,8 @@ sealed class QueryCriteria : GenericQueryCriteria<QueryCriteria, IQueryCriteriaP
             override val relevancyStatus: Vault.RelevancyStatus = Vault.RelevancyStatus.ALL
     ) : CommonQueryCriteria() {
         override fun visit(parser: IQueryCriteriaParser): Collection<Predicate> {
-            super.visit(parser)
-            return parser.parseCriteria(this)
+            val predicates = super.visit(parser)
+            return parser.parseCriteria(this) + predicates
         }
 
         fun copy(
@@ -240,8 +240,8 @@ sealed class QueryCriteria : GenericQueryCriteria<QueryCriteria, IQueryCriteriaP
             override val relevancyStatus: Vault.RelevancyStatus = Vault.RelevancyStatus.ALL
     ) : CommonQueryCriteria() {
         override fun visit(parser: IQueryCriteriaParser): Collection<Predicate> {
-            super.visit(parser)
-            return parser.parseCriteria(this)
+            val predicates = super.visit(parser)
+            return parser.parseCriteria(this) + predicates
         }
 
         fun copy(
