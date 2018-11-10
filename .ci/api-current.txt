@@ -4023,7 +4023,7 @@ public static final class net.corda.core.node.services.vault.QueryCriteria$Fungi
   @Nullable
   public final java.util.List<net.corda.core.identity.AbstractParty> getOwner()
   @Nullable
-  public final java.util.List<net.corda.core.identity.AbstractParty> getParticipants()
+  public java.util.List<net.corda.core.identity.AbstractParty> getParticipants()
   @Nullable
   public final net.corda.core.node.services.vault.ColumnPredicate<Long> getQuantity()
   @NotNull
@@ -4060,7 +4060,7 @@ public static final class net.corda.core.node.services.vault.QueryCriteria$Linea
   @Nullable
   public final java.util.List<String> getExternalId()
   @Nullable
-  public final java.util.List<net.corda.core.identity.AbstractParty> getParticipants()
+  public java.util.List<net.corda.core.identity.AbstractParty> getParticipants()
   @NotNull
   public net.corda.core.node.services.Vault$StateStatus getStatus()
   @Nullable

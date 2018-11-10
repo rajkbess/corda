@@ -380,11 +380,12 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         // ensure we re-use any existing instance of the same root entity
         val entityStateClass = VaultSchemaV1.VaultFungibleStates::class.java
-        val vaultFungibleStates = rootEntities.getOrElse(entityStateClass) {
-            val entityRoot = criteriaQuery.from(entityStateClass)
-            rootEntities[entityStateClass] = entityRoot
-            entityRoot
-        }
+        val vaultFungibleStates =
+                rootEntities.getOrElse(entityStateClass) {
+                    val entityRoot = criteriaQuery.from(entityStateClass)
+                    rootEntities[entityStateClass] = entityRoot
+                    entityRoot
+                }
 
         val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), vaultFungibleStates.get<PersistentStateRef>("stateRef"))
         predicateSet.add(joinPredicate)
@@ -422,11 +423,12 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         // ensure we re-use any existing instance of the same root entity
         val entityStateClass = VaultSchemaV1.VaultLinearStates::class.java
-        val vaultLinearStates = rootEntities.getOrElse(entityStateClass) {
-            val entityRoot = criteriaQuery.from(entityStateClass)
-            rootEntities[entityStateClass] = entityRoot
-            entityRoot
-        }
+        val vaultLinearStates =
+                rootEntities.getOrElse(entityStateClass) {
+                    val entityRoot = criteriaQuery.from(entityStateClass)
+                    rootEntities[entityStateClass] = entityRoot
+                    entityRoot
+                }
 
         val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), vaultLinearStates.get<PersistentStateRef>("stateRef"))
         predicateSet.add(joinPredicate)
@@ -455,11 +457,12 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
 
         try {
             // ensure we re-use any existing instance of the same root entity
-            val entityRoot = rootEntities.getOrElse(entityStateClass) {
-                val entityRoot = criteriaQuery.from(entityStateClass)
-                rootEntities[entityStateClass] = entityRoot
-                entityRoot
-            }
+            val entityRoot =
+                    rootEntities.getOrElse(entityStateClass) {
+                        val entityRoot = criteriaQuery.from(entityStateClass)
+                        rootEntities[entityStateClass] = entityRoot
+                        entityRoot
+                    }
 
             val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<PersistentStateRef>("stateRef"))
             predicateSet.add(joinPredicate)

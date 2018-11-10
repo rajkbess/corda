@@ -191,6 +191,7 @@ object VaultSchemaV1 : MappedSchema(
     // TODO: as the primary key is state ref we can only have one state ref in the tables!!
     // So change this to not sub-class persistent state.
     // Actually it must sub class persistent state OR we need to relax the type parameter for the query criteria classes.
+    // TODO: Write a test to check this.
 
     @Entity
     @Immutable
