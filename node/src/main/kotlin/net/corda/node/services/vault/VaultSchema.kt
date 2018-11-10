@@ -188,23 +188,27 @@ object VaultSchemaV1 : MappedSchema(
                 : this(null, stateRef, abstractParty.owningKey.toStringShort(), abstractParty)
     }
 
-    // TODO: as the primary key is state ref we can only have one state ref in the tables!!
-    // So change this to not sub-class persistent state.
-    // Actually it must sub class persistent state OR we need to relax the type parameter for the query criteria classes.
-    // TODO: Write a test to check this.
-
     @Entity
     @Immutable
     @Table(name = "v_pkey_hash_ex_id_map")
     class ExtIdToPubKeyView(
+            @Id
+            @GeneratedValue
+            @Column(name = "id", unique = true, nullable = false)
+            var id: Long? = null,
+
+            // Foreign key.
+            @Column(name = "state_ref")
+            var stateRef: PersistentStateRef,
+
             @Column(name = "public_key_hash")
             var publicKeyHash: String,
 
             @Column(name = "external_id")
             var externalId: UUID
-    ) : PersistentState()
+    ) : StatePersistable
 }
-
+// TODO: Check for uses of PersistentState and that they shouldn't be StatePersistable.
 // TODO: Use a liquibase script to migrate all the old records in the element collection tables to this table.
 // TODO: Make the fungible state and linear state participants point to the new table.
 //            @CollectionTable(name = "vault_fungible_states_parts",

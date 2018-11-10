@@ -449,7 +449,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
         return predicateSet
     }
 
-    override fun <L : PersistentState> parseCriteria(criteria: QueryCriteria.VaultCustomQueryCriteria<L>): Collection<Predicate> {
+    override fun <L : StatePersistable> parseCriteria(criteria: QueryCriteria.VaultCustomQueryCriteria<L>): Collection<Predicate> {
         log.trace { "Parsing VaultCustomQueryCriteria: $criteria" }
 
         val predicateSet = mutableSetOf<Predicate>()
@@ -496,7 +496,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
                 else
                     aggregateExpressions
         criteriaQuery.multiselect(selections)
-        val combinedPredicates = commonPredicates.values + predicateSet + constraintPredicates
+        val combinedPredicates = commonPredicates.values.plus(predicateSet).plus(constraintPredicates)
         criteriaQuery.where(*combinedPredicates.toTypedArray())
 
         return predicateSet

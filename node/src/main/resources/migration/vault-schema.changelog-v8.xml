@@ -23,6 +23,7 @@
         </createIndex>
         <createView viewName="v_pkey_hash_ex_id_map">
             select
+                state_party.id,
                 state_party.public_key_hash,
                 state_party.transaction_id,
                 state_party.output_index,
