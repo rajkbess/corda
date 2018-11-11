@@ -4287,16 +4287,16 @@ public abstract class net.corda.core.node.services.vault.SortAttribute extends j
 ##
 @CordaSerializable
 public static final class net.corda.core.node.services.vault.SortAttribute$Custom extends net.corda.core.node.services.vault.SortAttribute
-  public <init>(Class<? extends net.corda.core.schemas.PersistentState>, String)
+  public <init>(Class<? extends net.corda.core.schemas.StatePersistable>, String)
   @NotNull
-  public final Class<? extends net.corda.core.schemas.PersistentState> component1()
+  public final Class<? extends net.corda.core.schemas.StatePersistable> component1()
   @NotNull
   public final String component2()
   @NotNull
-  public final net.corda.core.node.services.vault.SortAttribute$Custom copy(Class<? extends net.corda.core.schemas.PersistentState>, String)
+  public final net.corda.core.node.services.vault.SortAttribute$Custom copy(Class<? extends net.corda.core.schemas.StatePersistable>, String)
   public boolean equals(Object)
   @NotNull
-  public final Class<? extends net.corda.core.schemas.PersistentState> getEntityStateClass()
+  public final Class<? extends net.corda.core.schemas.StatePersistable> getEntityStateClass()
   @NotNull
   public final String getEntityStateColumnName()
   public int hashCode()
