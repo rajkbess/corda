@@ -290,7 +290,7 @@ object Crypto {
     fun decodePrivateKey(encodedKey: ByteArray): PrivateKey {
         val keyInfo = PrivateKeyInfo.getInstance(encodedKey)
         val signatureScheme = findSignatureScheme(keyInfo.privateKeyAlgorithm)
-        val keyFactory = KeyFactory.getInstance(signatureScheme.algorithmName, providerMap[signatureScheme.providerName])
+        val keyFactory = keyFactory(signatureScheme)
         return keyFactory.generatePrivate(PKCS8EncodedKeySpec(encodedKey))
     }
 
@@ -323,7 +323,7 @@ object Crypto {
             "Unsupported key/algorithm for schemeCodeName: ${signatureScheme.schemeCodeName}"
         }
         try {
-            val keyFactory = KeyFactory.getInstance(signatureScheme.algorithmName, providerMap[signatureScheme.providerName])
+            val keyFactory = keyFactory(signatureScheme)
             return keyFactory.generatePrivate(PKCS8EncodedKeySpec(encodedKey))
         } catch (ikse: InvalidKeySpecException) {
             throw InvalidKeySpecException("This private key cannot be decoded, please ensure it is PKCS8 encoded and that " +
@@ -342,7 +342,7 @@ object Crypto {
     fun decodePublicKey(encodedKey: ByteArray): PublicKey {
         val subjectPublicKeyInfo = SubjectPublicKeyInfo.getInstance(encodedKey)
         val signatureScheme = findSignatureScheme(subjectPublicKeyInfo.algorithm)
-        val keyFactory = KeyFactory.getInstance(signatureScheme.algorithmName, providerMap[signatureScheme.providerName])
+        val keyFactory = keyFactory(signatureScheme)
         return keyFactory.generatePublic(X509EncodedKeySpec(encodedKey))
     }
 
@@ -377,7 +377,7 @@ object Crypto {
             "Unsupported key/algorithm for schemeCodeName: ${signatureScheme.schemeCodeName}"
         }
         try {
-            val keyFactory = KeyFactory.getInstance(signatureScheme.algorithmName, providerMap[signatureScheme.providerName])
+            val keyFactory = keyFactory(signatureScheme)
             return keyFactory.generatePublic(X509EncodedKeySpec(encodedKey))
         } catch (ikse: InvalidKeySpecException) {
             throw throw InvalidKeySpecException("This public key cannot be decoded, please ensure it is X509 encoded and " +
@@ -436,7 +436,7 @@ object Crypto {
             "Unsupported key/algorithm for schemeCodeName: ${signatureScheme.schemeCodeName}"
         }
         require(clearData.isNotEmpty()) { "Signing of an empty array is not permitted!" }
-        val signature = Signature.getInstance(signatureScheme.signatureName, providerMap[signatureScheme.providerName])
+        val signature = Instances.getSignatureInstance(signatureScheme.signatureName, providerMap[signatureScheme.providerName])
         // Note that deterministic signature schemes, such as EdDSA, original SPHINCS-256 and RSA PKCS#1, do not require
         // extra randomness, but we have to ensure that non-deterministic algorithms (i.e., ECDSA) use non-blocking
         // SecureRandom implementation. Also, SPHINCS-256 implementation in BouncyCastle 1.60 fails with
@@ -640,7 +640,7 @@ object Crypto {
         require(isSupportedSignatureScheme(signatureScheme)) {
             "Unsupported key/algorithm for schemeCodeName: ${signatureScheme.schemeCodeName}"
         }
-        val signature = Signature.getInstance(signatureScheme.signatureName, providerMap[signatureScheme.providerName])
+        val signature = Instances.getSignatureInstance(signatureScheme.signatureName, providerMap[signatureScheme.providerName])
         signature.initVerify(publicKey)
         signature.update(clearData)
         return signature.verify(signatureData)
@@ -1062,5 +1062,9 @@ object Crypto {
     @StubOutForDJVM
     private fun setBouncyCastleRNG() {
         CryptoServicesRegistrar.setSecureRandom(newSecureRandom())
+    }
+
+    private fun keyFactory(signatureScheme: SignatureScheme) = signatureScheme.getKeyFactory {
+        KeyFactory.getInstance(signatureScheme.algorithmName, providerMap[signatureScheme.providerName])
     }
 }

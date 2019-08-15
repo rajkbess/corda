@@ -10,13 +10,13 @@ import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.identity.PartyAndCertificate
 import net.corda.core.internal.NamedCacheFactory
+import net.corda.core.internal.cordapp.set
 import net.corda.core.internal.createComponentGroups
 import net.corda.core.node.NodeInfo
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.serialization.internal.effectiveSerializationEnv
 import net.corda.core.transactions.WireTransaction
 import net.corda.core.utilities.loggerFor
-import net.corda.node.internal.cordapp.set
 import net.corda.node.internal.createCordaPersistence
 import net.corda.node.internal.security.RPCSecurityManagerImpl
 import net.corda.node.internal.startHikariPool
@@ -35,9 +35,13 @@ import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
 import net.corda.nodeapi.internal.registerDevP2pCertificates
 import net.corda.serialization.internal.amqp.AMQP_ENABLED
+import net.corda.testing.core.ALICE_NAME
 import net.corda.testing.core.SerializationEnvironmentRule
+import net.corda.testing.core.TestIdentity
 import net.corda.testing.internal.stubs.CertificateStoreStubs
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyPair
@@ -176,9 +180,10 @@ fun configureDatabase(hikariProperties: Properties,
                       wellKnownPartyFromAnonymous: (AbstractParty) -> Party?,
                       schemaService: SchemaService = NodeSchemaService(),
                       internalSchemas: Set<MappedSchema> = NodeSchemaService().internalSchemas(),
-                      cacheFactory: NamedCacheFactory = TestingNamedCacheFactory()): CordaPersistence {
+                      cacheFactory: NamedCacheFactory = TestingNamedCacheFactory(),
+                      ourName: CordaX500Name = TestIdentity(ALICE_NAME, 70).name): CordaPersistence {
     val persistence = createCordaPersistence(databaseConfig, wellKnownPartyFromX500Name, wellKnownPartyFromAnonymous, schemaService, hikariProperties, cacheFactory, null)
-    persistence.startHikariPool(hikariProperties, databaseConfig, internalSchemas)
+    persistence.startHikariPool(hikariProperties, databaseConfig, internalSchemas, ourName = ourName)
     return persistence
 }
 
@@ -197,6 +202,21 @@ fun fakeAttachment(filePath: String, content: String, manifestAttributes: Map<St
     return bs.toByteArray()
 }
 
+fun fakeAttachment(filePath1: String, content1: String, filePath2: String, content2: String, manifestAttributes: Map<String, String> = emptyMap()): ByteArray {
+    val bs = ByteArrayOutputStream()
+    val manifest = Manifest()
+    manifestAttributes.forEach { manifest[it.key] = it.value } //adding manually instead of putAll, as it requires typed keys, not strings
+    JarOutputStream(bs, manifest).use { js ->
+        js.putNextEntry(ZipEntry(filePath1))
+        js.writer().apply { append(content1); flush() }
+        js.closeEntry()
+        js.putNextEntry(ZipEntry(filePath2))
+        js.writer().apply { append(content2); flush() }
+        js.closeEntry()
+    }
+    return bs.toByteArray()
+}
+
 /** If [effectiveSerializationEnv] is not set, runs the block with a new [SerializationEnvironmentRule]. */
 fun <R> withTestSerializationEnvIfNotSet(block: () -> R): R {
     val serializationExists = try {
@@ -209,5 +229,20 @@ fun <R> withTestSerializationEnvIfNotSet(block: () -> R): R {
         block()
     } else {
         createTestSerializationEnv().asTestContextEnv { block() }
+    }
+}
+
+/**
+ * Used to check if particular port is already bound i.e. not vacant
+ */
+fun isLocalPortBound(port: Int) : Boolean {
+    return try {
+        ServerSocket(port).use {
+            // Successful means that the port was vacant
+            false
+        }
+    } catch (e: IOException) {
+        // Failed to open server socket means that it is already bound by someone
+        true
     }
 }

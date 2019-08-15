@@ -10,12 +10,12 @@ import net.corda.core.internal.notary.NotaryServiceFlow
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.node.services.config.rpc.NodeRpcOptions
 import net.corda.node.services.config.schema.v1.V1NodeConfigurationSpec
-import net.corda.node.services.keys.cryptoservice.BCCryptoService
 import net.corda.nodeapi.internal.config.FileBasedCertificateStoreSupplier
 import net.corda.nodeapi.internal.config.MutualSslConfiguration
 import net.corda.nodeapi.internal.config.User
-import net.corda.nodeapi.internal.cryptoservice.CryptoService
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
+import net.corda.notary.experimental.bftsmart.BFTSmartConfig
+import net.corda.notary.experimental.raft.RaftConfig
 import net.corda.tools.shell.SSHDConfiguration
 import java.net.URL
 import java.nio.file.Path
@@ -34,6 +34,7 @@ interface NodeConfiguration {
     val security: SecurityConfiguration?
     val devMode: Boolean
     val devModeOptions: DevModeOptions?
+    @Deprecated(message = "Use of single compatibility zone URL is deprecated", replaceWith = ReplaceWith("networkServices.networkMapURL"))
     val compatibilityZoneURL: URL?
     val networkServices: NetworkServicesConfig?
     @Suppress("DEPRECATION")
@@ -50,7 +51,7 @@ interface NodeConfiguration {
     // TODO Move into DevModeOptions
     val useTestClock: Boolean get() = false
     val lazyBridgeStart: Boolean
-    val detectPublicIp: Boolean get() = true
+    val detectPublicIp: Boolean get() = false
     val sshd: SSHDConfiguration?
     val database: DatabaseConfig
     val noLocalShell: Boolean get() = false
@@ -84,7 +85,7 @@ interface NodeConfiguration {
 
     companion object {
         // default to at least 8MB and a bit extra for larger heap sizes
-        internal val defaultTransactionCacheSize: Long = 8.MB + getAdditionalCacheMemory()
+        val defaultTransactionCacheSize: Long = 8.MB + getAdditionalCacheMemory()
 
         internal val DEFAULT_FLOW_MONITOR_PERIOD_MILLIS: Duration = Duration.ofMinutes(1)
         internal val DEFAULT_FLOW_MONITOR_SUSPENSION_LOGGING_THRESHOLD_MILLIS: Duration = Duration.ofMinutes(1)
@@ -100,10 +101,6 @@ interface NodeConfiguration {
         const val cordappDirectoriesKey = "cordappDirectories"
 
         internal val defaultJmxReporterType = JmxReporterType.JOLOKIA
-    }
-
-    fun makeCryptoService(): CryptoService {
-        return BCCryptoService(this.myLegalName.x500Principal, this.signingCertificateStore)
     }
 }
 
@@ -140,7 +137,7 @@ data class NotaryConfig(
         /** The legal name of cluster in case of a distributed notary service. */
         val serviceLegalName: CordaX500Name? = null,
         /** The name of the notary service class to load. */
-        val className: String = "net.corda.node.services.transactions.SimpleNotaryService",
+        val className: String? = null,
         /**
          * If the wait time estimate on the internal queue exceeds this value, the notary may send
          * a wait time update to the client (implementation specific and dependent on the counter
@@ -148,7 +145,9 @@ data class NotaryConfig(
          */
         val etaMessageThresholdSeconds: Int = NotaryServiceFlow.defaultEstimatedWaitTime.seconds.toInt(),
         /** Notary implementation-specific configuration parameters. */
-        val extraConfig: Config? = null
+        val extraConfig: Config? = null,
+        val raft: RaftConfig? = null,
+        val bftSMaRt: BFTSmartConfig? = null
 )
 
 /**

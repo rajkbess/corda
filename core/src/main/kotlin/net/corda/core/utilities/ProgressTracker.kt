@@ -1,10 +1,12 @@
 package net.corda.core.utilities
 
+import net.corda.core.DeleteForDJVM
 import net.corda.core.internal.STRUCTURAL_STEP_PREFIX
+import net.corda.core.internal.warnOnce
 import net.corda.core.serialization.CordaSerializable
 import rx.Observable
 import rx.Subscription
-import rx.subjects.PublishSubject
+import rx.subjects.ReplaySubject
 import java.util.*
 
 /**
@@ -30,9 +32,15 @@ import java.util.*
  * using the [Observable] subscribeOn call.
  */
 @CordaSerializable
+@DeleteForDJVM
 class ProgressTracker(vararg inputSteps: Step) {
 
+    private companion object {
+        private val log = contextLogger()
+    }
+
     @CordaSerializable
+    @DeleteForDJVM
     sealed class Change(val progressTracker: ProgressTracker) {
         data class Position(val tracker: ProgressTracker, val newStep: Step) : Change(tracker) {
             override fun toString() = newStep.label
@@ -47,9 +55,16 @@ class ProgressTracker(vararg inputSteps: Step) {
         }
     }
 
-    /** The superclass of all step objects. */
+    /**
+     * The superclass of all step objects.
+     */
     @CordaSerializable
     open class Step(open val label: String) {
+        private fun definitionLocation(): String = Exception().stackTrace.first { it.className != ProgressTracker.Step::class.java.name }.let { "${it.className}:${it.lineNumber}" }
+
+        // Required when Steps with the same name are defined in multiple places.
+        private val discriminator: String = definitionLocation()
+
         open val changes: Observable<Change> get() = Observable.empty()
         open fun childProgressTracker(): ProgressTracker? = null
         /**
@@ -58,17 +73,31 @@ class ProgressTracker(vararg inputSteps: Step) {
          * Even if empty the basic details (i.e. label) of the step will be recorded for audit purposes.
          */
         open val extraAuditData: Map<String, String> get() = emptyMap()
+
+        override fun equals(other: Any?) = when (other) {
+            is Step -> this.label == other.label && this.discriminator == other.discriminator
+            else -> false
+        }
+
+        override fun hashCode(): Int {
+            var result = label.hashCode()
+            result = 31 * result + discriminator.hashCode()
+            return result
+        }
     }
 
     // Sentinel objects. Overrides equals() to survive process restarts and serialization.
+    @DeleteForDJVM
     object UNSTARTED : Step("Unstarted") {
         override fun equals(other: Any?) = other === UNSTARTED
     }
 
+    @DeleteForDJVM
     object STARTING : Step("Starting") {
         override fun equals(other: Any?) = other === STARTING
     }
 
+    @DeleteForDJVM
     object DONE : Step("Done") {
         override fun equals(other: Any?) = other === DONE
     }
@@ -78,16 +107,27 @@ class ProgressTracker(vararg inputSteps: Step) {
 
     private val childProgressTrackers = mutableMapOf<Step, Child>()
 
-    /** The steps in this tracker, same as the steps passed to the constructor but with UNSTARTED and DONE inserted. */
-    val steps = arrayOf(UNSTARTED, STARTING, *inputSteps, DONE)
+    /**
+     * The steps in this tracker, same as the steps passed to the constructor but with UNSTARTED and DONE inserted.
+     */
+    val steps = arrayOf(UNSTARTED, STARTING, *inputSteps, DONE).also { stepsArray ->
+        val labels = stepsArray.map { it.label }
+        if (labels.toSet().size < labels.size) {
+            log.warnOnce("Found ProgressTracker Step(s) with the same label: ${labels.groupBy { it }.filter { it.value.size > 1 }.map { it.key }}")
+        }
+    }
 
     private var _allStepsCache: List<Pair<Int, Step>> = _allSteps()
 
     // This field won't be serialized.
-    private val _changes by transient { PublishSubject.create<Change>() }
-    private val _stepsTreeChanges by transient { PublishSubject.create<List<Pair<Int, String>>>() }
-    private val _stepsTreeIndexChanges by transient { PublishSubject.create<Int>() }
+    private val _changes by transient { ReplaySubject.create<Change>() }
+    private val _stepsTreeChanges by transient { ReplaySubject.create<List<Pair<Int, String>>>() }
+    private val _stepsTreeIndexChanges by transient { ReplaySubject.create<Int>() }
 
+    /**
+     * Reading returns the value of steps[stepIndex], writing moves the position of the current tracker. Once moved to
+     * the [DONE] state, this tracker is finished and the current step cannot be moved again.
+     */
     var currentStep: Step
         get() = steps[stepIndex]
         set(value) {
@@ -123,11 +163,13 @@ class ProgressTracker(vararg inputSteps: Step) {
             }
         }
 
-
     init {
         steps.forEach {
             configureChildTrackerForStep(it)
         }
+        // Immediately update the step tree observable to ensure the first update the client receives is the initial state of the progress
+        // tracker.
+        _stepsTreeChanges.onNext(allStepsLabels)
         this.currentStep = UNSTARTED
     }
 
@@ -138,39 +180,31 @@ class ProgressTracker(vararg inputSteps: Step) {
         }
     }
 
-    /** The zero-based index of the current step in the [steps] array (i.e. with UNSTARTED and DONE) */
+    /**
+     * The zero-based index of the current step in the [steps] array (i.e. with UNSTARTED and DONE)
+     */
     var stepIndex: Int = 0
         private set(value) {
             field = value
         }
 
-    /** The zero-bases index of the current step in a [allStepsLabels] list */
+    /**
+     * The zero-bases index of the current step in a [allStepsLabels] list
+     */
     var stepsTreeIndex: Int = -1
         private set(value) {
-            field = value
-            _stepsTreeIndexChanges.onNext(value)
+            if (value != field) {
+                field = value
+                _stepsTreeIndexChanges.onNext(value)
+            }
         }
 
     /**
-     * Reading returns the value of steps[stepIndex], writing moves the position of the current tracker. Once moved to
-     * the [DONE] state, this tracker is finished and the current step cannot be moved again.
+     * Returns the current step, descending into children to find the deepest step we are up to.
      */
-
-    /** Returns the current step, descending into children to find the deepest step we are up to. */
+    @Suppress("unused")
     val currentStepRecursive: Step
         get() = getChildProgressTracker(currentStep)?.currentStepRecursive ?: currentStep
-
-    /** Returns the current step, descending into children to find the deepest started step we are up to. */
-    private val currentStartedStepRecursive: Step
-        get() {
-            val step = getChildProgressTracker(currentStep)?.currentStartedStepRecursive ?: currentStep
-            return if (step == UNSTARTED) currentStep else step
-        }
-
-    private fun currentStepRecursiveWithoutUnstarted(): Step {
-        val stepRecursive = getChildProgressTracker(currentStep)?.currentStartedStepRecursive
-        return if (stepRecursive == null || stepRecursive == UNSTARTED) currentStep else stepRecursive
-    }
 
     fun getChildProgressTracker(step: Step): ProgressTracker? = childProgressTrackers[step]?.tracker
 
@@ -205,12 +239,17 @@ class ProgressTracker(vararg inputSteps: Step) {
         _stepsTreeChanges.onError(error)
     }
 
-    /** The parent of this tracker: set automatically by the parent when a tracker is added as a child */
+    /**
+     * The parent of this tracker: set automatically by the parent when a tracker is added as a child
+     */
     var parent: ProgressTracker? = null
         private set
 
-    /** Walks up the tree to find the top level tracker. If this is the top level tracker, returns 'this' */
-    @Suppress("unused") // TODO: Review by EOY2016 if this property is useful anywhere.
+    /**
+     * Walks up the tree to find the top level tracker. If this is the top level tracker, returns 'this'.
+     * Required for API compatibility.
+     */
+    @Suppress("unused")
     val topLevelTracker: ProgressTracker
         get() {
             var cursor: ProgressTracker = this
@@ -225,16 +264,28 @@ class ProgressTracker(vararg inputSteps: Step) {
         recalculateStepsTreeIndex()
     }
 
+    private fun getStepIndexAtLevel(): Int {
+        // This gets the index of the current step in the context of this progress tracker, so it will always be at the top level in
+        // the allStepsCache.
+        val index = _allStepsCache.indexOf(Pair(0, currentStep))
+        return if (index >= 0) index else 0
+    }
+
+    private fun getCurrentStepTreeIndex(): Int {
+        val indexAtLevel = getStepIndexAtLevel()
+        val additionalIndex = getChildProgressTracker(currentStep)?.getCurrentStepTreeIndex() ?: 0
+        return indexAtLevel + additionalIndex
+    }
+
     private fun recalculateStepsTreeIndex() {
-        val step = currentStepRecursiveWithoutUnstarted()
-        stepsTreeIndex = _allStepsCache.indexOfFirst { it.second == step }
+        stepsTreeIndex = getCurrentStepTreeIndex()
     }
 
     private fun _allSteps(level: Int = 0): List<Pair<Int, Step>> {
         val result = ArrayList<Pair<Int, Step>>()
         for (step in steps) {
             if (step == UNSTARTED) continue
-            if (level > 0 && step == DONE) continue
+            if (level > 0 && (step == DONE || step == STARTING)) continue
             result += Pair(level, step)
             getChildProgressTracker(step)?.let { result += it._allSteps(level + 1) }
         }
@@ -282,15 +333,10 @@ class ProgressTracker(vararg inputSteps: Step) {
      */
     val stepsTreeIndexChanges: Observable<Int> get() = _stepsTreeIndexChanges
 
-    /** Returns true if the progress tracker has ended, either by reaching the [DONE] step or prematurely with an error */
+    /**
+     * Returns true if the progress tracker has ended, either by reaching the [DONE] step or prematurely with an error
+     */
     val hasEnded: Boolean get() = _changes.hasCompleted() || _changes.hasThrowable()
-
-    companion object {
-        val DEFAULT_TRACKER = { ProgressTracker() }
-    }
 }
 // TODO: Expose the concept of errors.
 // TODO: It'd be helpful if this class was at least partly thread safe.
-
-
-

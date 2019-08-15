@@ -18,7 +18,8 @@ import java.security.SignatureException
  * [SignedTransaction] and perform the resolution back-and-forth required to check the dependencies and download any missing
  * attachments. The flow will return the [SignedTransaction] after it is resolved and then verified using [SignedTransaction.verify].
  *
- * Please note that it will *not* store the transaction to the vault unless that is explicitly requested.
+ * Please note that it will *not* store the transaction to the vault unless that is explicitly requested and checkSufficientSignatures is true.
+ * Setting statesToRecord to anything else when checkSufficientSignatures is false will *not* update the vault.
  *
  * @property otherSideSession session to the other side which is calling [SendTransactionFlow].
  * @property checkSufficientSignatures if true checks all required signatures are present. See [SignedTransaction.verify].
@@ -43,7 +44,7 @@ open class ReceiveTransactionFlow @JvmOverloads constructor(private val otherSid
             it.pushToLoggingContext()
             logger.info("Received transaction acknowledgement request from party ${otherSideSession.counterparty}.")
             checkParameterHash(it.networkParametersHash)
-            subFlow(ResolveTransactionsFlow(it, otherSideSession))
+            subFlow(ResolveTransactionsFlow(it, otherSideSession, statesToRecord))
             logger.info("Transaction dependencies resolution completed.")
             try {
                 it.verify(serviceHub, checkSufficientSignatures)

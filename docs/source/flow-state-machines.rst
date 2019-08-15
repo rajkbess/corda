@@ -93,7 +93,7 @@ Our flow has two parties (B and S for buyer and seller) and will proceed as foll
    transaction in B's local vault, and then sending it on to S who also checks it and commits the transaction to S's
    local vault.
 
-You can find the implementation of this flow in the file ``finance/src/main/kotlin/net/corda/finance/TwoPartyTradeFlow.kt``.
+You can find the implementation of this flow in the file ``finance/workflows/src/main/kotlin/net/corda/finance/TwoPartyTradeFlow.kt``.
 
 Assuming no malicious termination, they both end the flow being in possession of a valid, signed transaction that
 represents an atomic asset swap.
@@ -201,7 +201,7 @@ Let's implement the ``Seller.call`` method that will be run when the flow is inv
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
         :language: kotlin
         :start-after: DOCSTART 4
         :end-before: DOCEND 4
@@ -237,7 +237,7 @@ OK, let's do the same for the buyer side:
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
          :language: kotlin
          :start-after: DOCSTART 1
          :end-before: DOCEND 1
@@ -367,7 +367,7 @@ override ``checkTransaction()`` to add our own custom validation logic:
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
         :language: kotlin
         :start-after: DOCSTART 5
         :end-before: DOCEND 5
@@ -399,6 +399,17 @@ minutes, hours or even days in the case of a flow that needs human interaction!
    It's OK to keep references around to many large internal node services though: these will be serialised using a
    special token that's recognised by the platform, and wired up to the right instance when the continuation is
    loaded off disk again.
+
+.. warning:: If a node has flows still in a suspended state, with flow continuations written to disk, it will not be
+             possible to upgrade that node to a new version of Corda or your app, because flows must be completely "drained"
+             before an upgrade can be performed, and must reach a finished state for draining to complete (see
+             :ref:`draining_the_node` for details). While there are mechanisms for "evolving" serialised data held
+             in the vault, there are no equivalent mechanisms for updating serialised checkpoint data. For this
+             reason it is not a good idea to design flows with the intention that they should remain in a suspended
+             state for a long period of time, as this will obstruct necessary upgrades to Corda itself. Any
+             long-running business process should therefore be structured as a series of discrete transactions,
+             written to the vault, rather than a single flow persisted over time through the flow checkpointing
+             mechanism.
 
 ``receive`` and ``sendAndReceive`` return a simple wrapper class, ``UntrustworthyData<T>``, which is
 just a marker class that reminds us that the data came from a potentially malicious external source and may have been
@@ -443,7 +454,7 @@ A flow might declare some steps with code inside the flow class like this:
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
         :language: kotlin
         :start-after: DOCSTART 2
         :end-before: DOCEND 2
@@ -467,7 +478,7 @@ is a good idea, as that will help the users see what is coming up. You can pre-c
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
         :language: kotlin
         :start-after: DOCSTART 3
         :end-before: DOCEND 3

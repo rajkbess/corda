@@ -44,6 +44,7 @@ open class DefaultNamedCacheFactory protected constructor(private val metricRegi
                 name == "DBTransactionStorage_transactions" -> caffeine.maximumWeight(transactionCacheSizeBytes)
                 name == "NodeAttachmentService_attachmentContent" -> caffeine.maximumWeight(attachmentContentCacheSizeBytes)
                 name == "NodeAttachmentService_attachmentPresence" -> caffeine.maximumSize(attachmentCacheBound)
+                name == "NodeAttachmentService_contractAttachmentVersions" -> caffeine.maximumSize(defaultCacheSize)
                 name == "PersistentIdentityService_partyByKey" -> caffeine.maximumSize(defaultCacheSize)
                 name == "PersistentIdentityService_partyByName" -> caffeine.maximumSize(defaultCacheSize)
                 name == "PersistentNetworkMap_nodesByKey" -> caffeine.maximumSize(defaultCacheSize)
@@ -58,6 +59,7 @@ open class DefaultNamedCacheFactory protected constructor(private val metricRegi
                 name == "RaftUniquenessProvider_transactions" -> caffeine.maximumSize(defaultCacheSize)
                 name == "BasicHSMKeyManagementService_keys" -> caffeine.maximumSize(defaultCacheSize)
                 name == "NodeParametersStorage_networkParametersByHash" -> caffeine.maximumSize(defaultCacheSize)
+                name == "PublicKeyToOwningIdentityCache_cache" -> caffeine.maximumSize(defaultCacheSize)
                 else -> throw IllegalArgumentException("Unexpected cache name $name. Did you add a new cache?")
             }
         }

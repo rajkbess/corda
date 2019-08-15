@@ -1,14 +1,16 @@
 package net.corda.cliutils
 
 import net.corda.core.internal.*
+import net.corda.core.utilities.loggerFor
 import org.apache.commons.io.IOUtils
-import org.apache.commons.lang.SystemUtils
+import org.apache.commons.lang3.SystemUtils
 import picocli.CommandLine
 import picocli.CommandLine.Command
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.*
+import net.corda.common.logging.CordaVersion
 
 private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
     private companion object {
@@ -71,7 +73,7 @@ private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
     // If on Windows, Path.toString() returns a path with \ instead of /, but for bash Windows users we want to convert those back to /'s
     private fun Path.toStringWithDeWindowsfication(): String = this.toAbsolutePath().toString().replace("\\", "/")
 
-    private fun jarVersion(alias: String) = "# $alias - Version: ${CordaVersionProvider.releaseVersion}, Revision: ${CordaVersionProvider.revision}"
+    private fun jarVersion(alias: String) = "# $alias - Version: ${CordaVersion.releaseVersion}, Revision: ${CordaVersion.revision}"
     private fun getAutoCompleteFileLocation(alias: String) = userHome / ".completion" / alias
 
     private fun generateAutoCompleteFile(alias: String) {
@@ -79,7 +81,7 @@ private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
         val autoCompleteFile = getAutoCompleteFileLocation(alias)
         autoCompleteFile.parent.createDirectories()
         val hierarchy = CommandLine(parent)
-        parent.subCommands().forEach { hierarchy.addSubcommand(it.alias, it)}
+        parent.subCommands.forEach { hierarchy.addSubcommand(it.alias, it)}
 
         val builder = StringBuilder(picocli.AutoComplete.bash(alias, hierarchy))
         builder.append(jarVersion(alias))
@@ -108,7 +110,9 @@ private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
         // Replace any existing alias. There can be only one.
         bashSettingsFile.addOrReplaceIfStartsWith("alias ${parent.alias}", command)
         val completionFileCommand = "for bcfile in ~/.completion/* ; do . \$bcfile; done"
-        bashSettingsFile.addIfNotExists(completionFileCommand)
+        if (generateAutoCompleteFile) {
+            bashSettingsFile.addIfNotExists(completionFileCommand)
+        }
         bashSettingsFile.updateAndBackupIfNecessary()
 
         // Get zsh settings file
@@ -116,7 +120,9 @@ private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
         zshSettingsFile.addIfNotExists("autoload -U +X compinit && compinit")
         zshSettingsFile.addIfNotExists("autoload -U +X bashcompinit && bashcompinit")
         zshSettingsFile.addOrReplaceIfStartsWith("alias ${parent.alias}", command)
-        zshSettingsFile.addIfNotExists(completionFileCommand)
+        if (generateAutoCompleteFile) {
+            zshSettingsFile.addIfNotExists(completionFileCommand)
+        }
         zshSettingsFile.updateAndBackupIfNecessary()
 
         if (generateAutoCompleteFile) {
@@ -129,10 +135,10 @@ private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
         return ExitCodes.SUCCESS
     }
 
-    private fun declaredBashVersion(): String = execCommand("bash -c 'echo \$BASH_VERSION'")
+    private fun declaredBashVersion(): String = execCommand("bash", "-c", "echo \$BASH_VERSION")
 
     private fun installedShell(): ShellType {
-        val path = execCommand("bash -c 'echo \$SHELL'")
+        val path = execCommand("bash", "-c", "echo \$SHELL").trim()
         return when {
             path.endsWith("/zsh") -> ShellType.ZSH
             path.endsWith("/bash") -> ShellType.BASH
@@ -144,9 +150,14 @@ private class ShellExtensionsGenerator(val parent: CordaCliWrapper) {
         ZSH, BASH, OTHER
     }
 
-    private fun execCommand(command: String): String {
-        val process = ProcessBuilder(command)
-        return IOUtils.toString(process.start().inputStream, Charsets.UTF_8)
+    private fun execCommand(vararg commandAndArgs: String): String {
+        return try {
+            val process = ProcessBuilder(*commandAndArgs)
+            IOUtils.toString(process.start().inputStream, Charsets.UTF_8)
+        } catch (exception: Exception) {
+            loggerFor<InstallShellExtensionsParser>().warn("Failed to run command: ${commandAndArgs.joinToString(" ")}; $exception")
+            ""
+        }
     }
 
     fun checkForAutoCompleteUpdate() {

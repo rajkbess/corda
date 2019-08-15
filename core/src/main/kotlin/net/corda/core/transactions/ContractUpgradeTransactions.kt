@@ -10,11 +10,17 @@ import net.corda.core.crypto.computeNonce
 import net.corda.core.identity.Party
 import net.corda.core.internal.AttachmentWithContext
 import net.corda.core.internal.combinedHash
+import net.corda.core.internal.isAttachmentTrusted
 import net.corda.core.node.NetworkParameters
 import net.corda.core.node.ServicesForResolution
-import net.corda.core.serialization.*
+import net.corda.core.serialization.CordaSerializable
+import net.corda.core.serialization.SerializedBytes
+import net.corda.core.serialization.deserialize
 import net.corda.core.serialization.internal.AttachmentsClassLoaderBuilder
+import net.corda.core.serialization.serialize
 import net.corda.core.transactions.ContractUpgradeFilteredTransaction.FilteredComponent
+import net.corda.core.transactions.ContractUpgradeLedgerTransaction.Companion.loadUpgradedContract
+import net.corda.core.transactions.ContractUpgradeLedgerTransaction.Companion.retrieveAppClassLoader
 import net.corda.core.transactions.ContractUpgradeWireTransaction.Companion.calculateUpgradedState
 import net.corda.core.transactions.ContractUpgradeWireTransaction.Component.*
 import net.corda.core.transactions.WireTransaction.Companion.resolveStateRefBinaryComponent
@@ -38,7 +44,6 @@ data class ContractUpgradeWireTransaction(
         /** Required for hiding components in [ContractUpgradeFilteredTransaction]. */
         val privacySalt: PrivacySalt = PrivacySalt()
 ) : CoreTransaction() {
-
     companion object {
         /**
          * Runs the explicit upgrade logic.
@@ -111,24 +116,24 @@ data class ContractUpgradeWireTransaction(
                 ?: throw AttachmentResolutionException(legacyContractAttachmentId)
         val upgradedContractAttachment = services.attachments.openAttachment(upgradedContractAttachmentId)
                 ?: throw AttachmentResolutionException(upgradedContractAttachmentId)
-        val hashToResolve = networkParametersHash ?: services.networkParametersStorage.defaultHash
-        val resolvedNetworkParameters = services.networkParametersStorage.lookup(hashToResolve) ?: throw TransactionResolutionException(id)
-        return ContractUpgradeLedgerTransaction(
+        val hashToResolve = networkParametersHash ?: services.networkParametersService.defaultHash
+        val resolvedNetworkParameters = services.networkParametersService.lookup(hashToResolve) ?: throw TransactionResolutionException(id)
+        return ContractUpgradeLedgerTransaction.create(
                 resolvedInputs,
                 notary,
                 legacyContractAttachment,
-                upgradedContractClassName,
                 upgradedContractAttachment,
                 id,
                 privacySalt,
                 sigs,
-                resolvedNetworkParameters
+                resolvedNetworkParameters,
+                loadUpgradedContract(upgradedContractClassName, retrieveAppClassLoader(services))
         )
     }
 
     private fun upgradedContract(className: ContractClassName, classLoader: ClassLoader): UpgradedContract<ContractState, ContractState> = try {
-        classLoader.loadClass(className).asSubclass(UpgradedContract::class.java as Class<UpgradedContract<ContractState, ContractState>>)
-                .newInstance()
+        @Suppress("UNCHECKED_CAST")
+        classLoader.loadClass(className).asSubclass(UpgradedContract::class.java).newInstance() as UpgradedContract<ContractState, ContractState>
     } catch (e: Exception) {
         throw TransactionVerificationException.ContractCreationError(id, className, e)
     }
@@ -137,15 +142,19 @@ data class ContractUpgradeWireTransaction(
      * Creates a binary serialized component for a virtual output state serialised and executed with the attachments from the transaction.
      */
     @CordaInternal
-    internal fun resolveOutputComponent(services: ServicesForResolution, stateRef: StateRef): SerializedBytes<TransactionState<ContractState>> {
-        val binaryInput = resolveStateRefBinaryComponent(inputs[stateRef.index], services)!!
+    internal fun resolveOutputComponent(services: ServicesForResolution, stateRef: StateRef, params: NetworkParameters): SerializedBytes<TransactionState<ContractState>> {
+        val binaryInput: SerializedBytes<TransactionState<ContractState>> = resolveStateRefBinaryComponent(inputs[stateRef.index], services)!!
         val legacyAttachment = services.attachments.openAttachment(legacyContractAttachmentId)
                 ?: throw MissingContractAttachments(emptyList())
         val upgradedAttachment = services.attachments.openAttachment(upgradedContractAttachmentId)
                 ?: throw MissingContractAttachments(emptyList())
 
-        return AttachmentsClassLoaderBuilder.withAttachmentsClassloaderContext(listOf(legacyAttachment, upgradedAttachment)) { transactionClassLoader ->
-            val resolvedInput = binaryInput.deserialize<TransactionState<ContractState>>()
+        return AttachmentsClassLoaderBuilder.withAttachmentsClassloaderContext(
+                listOf(legacyAttachment, upgradedAttachment),
+                params,
+                id,
+                { isAttachmentTrusted(it, services.attachments) }) { transactionClassLoader ->
+            val resolvedInput = binaryInput.deserialize()
             val upgradedContract = upgradedContract(upgradedContractClassName, transactionClassLoader)
             val outputState = calculateUpgradedState(resolvedInput, upgradedContract, upgradedAttachment)
             outputState.serialize()
@@ -232,22 +241,63 @@ data class ContractUpgradeFilteredTransaction(
  * *participants* fields, so full resolution is needed for signature verification.
  */
 @KeepForDJVM
-data class ContractUpgradeLedgerTransaction(
+class ContractUpgradeLedgerTransaction
+private constructor(
         override val inputs: List<StateAndRef<ContractState>>,
         override val notary: Party,
         val legacyContractAttachment: Attachment,
-        val upgradedContractClassName: ContractClassName,
         val upgradedContractAttachment: Attachment,
         override val id: SecureHash,
         val privacySalt: PrivacySalt,
         override val sigs: List<TransactionSignature>,
-        override val networkParameters: NetworkParameters
+        override val networkParameters: NetworkParameters,
+        private val upgradedContract: UpgradedContract<ContractState, *>
 ) : FullTransaction(), TransactionWithSignatures {
     /** ContractUpgradeLedgerTransactions do not contain reference input states. */
     override val references: List<StateAndRef<ContractState>> = emptyList()
     /** The legacy contract class name is determined by the first input state. */
     private val legacyContractClassName = inputs.first().state.contract
-    private val upgradedContract: UpgradedContract<ContractState, *> = loadUpgradedContract()
+
+    val upgradedContractClassName: ContractClassName
+        get() = upgradedContract::class.java.name
+
+    companion object {
+
+        @CordaInternal
+        internal fun create(
+                inputs: List<StateAndRef<ContractState>>,
+                notary: Party,
+                legacyContractAttachment: Attachment,
+                upgradedContractAttachment: Attachment,
+                id: SecureHash,
+                privacySalt: PrivacySalt,
+                sigs: List<TransactionSignature>,
+                networkParameters: NetworkParameters,
+                upgradedContract: UpgradedContract<ContractState, *>
+        ): ContractUpgradeLedgerTransaction {
+            return ContractUpgradeLedgerTransaction(inputs, notary, legacyContractAttachment, upgradedContractAttachment, id, privacySalt, sigs, networkParameters, upgradedContract)
+        }
+
+        // TODO - this has to use a classloader created from the upgraded attachment.
+        @CordaInternal
+        internal fun loadUpgradedContract(upgradedContractClassName: ContractClassName, classLoader: ClassLoader): UpgradedContract<ContractState, *> {
+            @Suppress("UNCHECKED_CAST")
+            return classLoader
+                    .loadClass(upgradedContractClassName)
+                    .asSubclass(Contract::class.java)
+                    .getConstructor()
+                    .newInstance() as UpgradedContract<ContractState, *>
+        }
+
+        // This is a "hack" to retrieve the CordappsClassloader from the services without having access to all classes.
+        @CordaInternal
+        internal fun retrieveAppClassLoader(services: ServicesForResolution): ClassLoader {
+            val cordappLoader = services.cordappProvider::class.java.getMethod("getCordappLoader").invoke(services.cordappProvider)
+
+            @Suppress("UNCHECKED_CAST")
+            return cordappLoader::class.java.getMethod("getAppClassLoader").invoke(cordappLoader) as ClassLoader
+        }
+    }
 
     init {
         checkNotaryWhitelisted()
@@ -264,9 +314,9 @@ data class ContractUpgradeLedgerTransaction(
     private fun verifyConstraints() {
         val attachmentForConstraintVerification = AttachmentWithContext(
                 legacyContractAttachment as? ContractAttachment
-                        ?: ContractAttachment(legacyContractAttachment, legacyContractClassName, signerKeys = legacyContractAttachment.signerKeys),
+                        ?: ContractAttachment.create(legacyContractAttachment, legacyContractClassName, signerKeys = legacyContractAttachment.signerKeys),
                 upgradedContract.legacyContract,
-                networkParameters)
+                networkParameters.whitelistedContractImplementations)
 
         // TODO: exclude encumbrance states from this check
         check(inputs.all { it.state.constraint.isSatisfiedBy(attachmentForConstraintVerification) }) {
@@ -298,13 +348,47 @@ data class ContractUpgradeLedgerTransaction(
         return keys.map { it.toBase58String() }
     }
 
-    // TODO: load contract from the CorDapp classloader
-    private fun loadUpgradedContract(): UpgradedContract<ContractState, *> {
-        @Suppress("UNCHECKED_CAST")
-        return this::class.java.classLoader
-                .loadClass(upgradedContractClassName)
-                .asSubclass(Contract::class.java)
-                .getConstructor()
-                .newInstance() as UpgradedContract<ContractState, *>
+    operator fun component1(): List<StateAndRef<ContractState>> = inputs
+    operator fun component2(): Party = notary
+    operator fun component3(): Attachment = legacyContractAttachment
+    operator fun component4(): ContractClassName = upgradedContract::class.java.name
+    operator fun component5(): Attachment = upgradedContractAttachment
+    operator fun component6(): SecureHash = id
+    operator fun component7(): PrivacySalt = privacySalt
+    operator fun component8(): List<TransactionSignature> = sigs
+    operator fun component9(): NetworkParameters = networkParameters
+
+    override fun equals(other: Any?): Boolean = this === other || other is ContractUpgradeLedgerTransaction && this.id == other.id
+
+    override fun hashCode(): Int = id.hashCode()
+
+    override fun toString(): String {
+        return "ContractUpgradeLedgerTransaction(inputs=$inputs, notary=$notary, legacyContractAttachment=$legacyContractAttachment, upgradedContractAttachment=$upgradedContractAttachment, id=$id, privacySalt=$privacySalt, sigs=$sigs, networkParameters=$networkParameters, upgradedContract=$upgradedContract, references=$references, legacyContractClassName='$legacyContractClassName', outputs=$outputs)"
     }
+
+    @Deprecated("ContractUpgradeLedgerTransaction should not be created directly, use ContractUpgradeWireTransaction.resolve instead.")
+    constructor(
+            inputs: List<StateAndRef<ContractState>>,
+            notary: Party,
+            legacyContractAttachment: Attachment,
+            upgradedContractClassName: ContractClassName,
+            upgradedContractAttachment: Attachment,
+            id: SecureHash,
+            privacySalt: PrivacySalt,
+            sigs: List<TransactionSignature>,
+            networkParameters: NetworkParameters
+    ) : this(inputs, notary, legacyContractAttachment, upgradedContractAttachment, id, privacySalt, sigs, networkParameters, loadUpgradedContract(upgradedContractClassName, ContractUpgradeLedgerTransaction::class.java.classLoader))
+
+    @Deprecated("ContractUpgradeLedgerTransaction should not be created directly, use ContractUpgradeWireTransaction.resolve instead.")
+    fun copy(
+            inputs: List<StateAndRef<ContractState>> = this.inputs,
+            notary: Party = this.notary,
+            legacyContractAttachment: Attachment = this.legacyContractAttachment,
+            upgradedContractClassName: ContractClassName = this.upgradedContract::class.java.name,
+            upgradedContractAttachment: Attachment = this.upgradedContractAttachment,
+            id: SecureHash = this.id,
+            privacySalt: PrivacySalt = this.privacySalt,
+            sigs: List<TransactionSignature> = this.sigs,
+            networkParameters: NetworkParameters = this.networkParameters
+    ) = ContractUpgradeLedgerTransaction(inputs, notary, legacyContractAttachment, upgradedContractClassName, upgradedContractAttachment, id, privacySalt, sigs, networkParameters)
 }

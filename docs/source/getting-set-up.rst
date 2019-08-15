@@ -3,19 +3,27 @@ Getting set up for CorDapp development
 
 Software requirements
 ---------------------
+
 Corda uses industry-standard tools:
 
-* **Oracle JDK 8 JVM** - minimum supported version **8u171**
-* **IntelliJ IDEA** - supported versions **2017.x** and **2018.x** (with Kotlin plugin version |kotlin_version|)
-* **Git**
+* **Java 8 JVM** - we require at least version |java_version|, but do not currently support Java 9 or higher.
 
-We also use Gradle and Kotlin, but you do not need to install them. A standalone Gradle wrapper is provided, and it
-will download the correct version of Kotlin.
+  We have tested with the following builds:
+
+  * `Oracle JDK <https://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html>`_
+
+  * `Amazon Corretto <https://aws.amazon.com/corretto/>`_
+
+  * `Red Hat's OpenJDK <https://developers.redhat.com/products/openjdk/overview/>`_
+
+  * `Zulu's OpenJDK <https://www.azul.com/>`_
+
+  Please note that OpenJDK builds usually exclude JavaFX, which our GUI tools require.
+
+* **IntelliJ IDEA** - supported versions **2017.x**, **2018.x** and **2019.x** (with Kotlin plugin version |kotlin_version|)
+* **Gradle** - we use 4.10 and the ``gradlew`` script in the project / samples directories will download it for you.
 
 Please note:
-
-* Corda runs in a JVM. JVM implementations other than Oracle JDK 8 are not actively supported. However, if you do
-  choose to use OpenJDK, you will also need to install OpenJFX
 
 * Applications on Corda (CorDapps) can be written in any language targeting the JVM. However, Corda itself and most of
   the samples are written in Kotlin. Kotlin is an
@@ -26,7 +34,7 @@ Please note:
   `getting started guide <https://kotlinlang.org/docs/tutorials/>`_, and a series of
   `Kotlin Koans <https://kotlinlang.org/docs/tutorials/koans.html>`_
 
-* IntelliJ IDEA is recommended due to the strength of its Kotlin integration
+* IntelliJ IDEA is recommended due to the strength of its Kotlin integration.
 
 Following these software recommendations will minimize the number of errors you encounter, and make it easier for
 others to provide support. However, if you do use other tools, we'd be interested to hear about any issues that arise.
@@ -49,6 +57,16 @@ The set-up instructions are available for the following platforms:
 
 .. _windows-label:
 
+.. note:: These setup instructions will guide you on how to install the Oracle JDK. Each JDK can be found on their respective sites:
+
+          * `Oracle <http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html>`_
+
+          * `Amazon Corretto <https://docs.aws.amazon.com/corretto/latest/corretto-8-ug/downloads-list.html>`_
+
+          * `Red Hat OpenJDK <https://developers.redhat.com/products/openjdk/download/>`_
+
+          * `Zulu OpenJDK <https://www.azul.com/downloads/zulu/>`_
+
 Windows
 -------
 
@@ -57,12 +75,10 @@ Windows
 Java
 ^^^^
 1. Visit http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html
-2. Scroll down to "Java SE Development Kit 8uXXX" (where "XXX" is the latest minor version number)
-3. Toggle "Accept License Agreement"
-4. Click the download link for jdk-8uXXX-windows-x64.exe (where "XXX" is the latest minor version number)
-5. Download and run the executable to install Java (use the default settings)
-6. Add Java to the PATH environment variable by following the instructions at https://docs.oracle.com/javase/7/docs/webnotes/install/windows/jdk-installation-windows.html#path
-7. Open a new command prompt and run ``java -version`` to test that Java is installed correctly
+2. Click the download link for jdk-8uXXX-windows-x64.exe (where "XXX" is the latest minor version number)
+3. Download and run the executable to install Java (use the default settings)
+4. Add Java to the PATH environment variable by following the instructions in the `Oracle documentation <https://docs.oracle.com/javase/7/docs/webnotes/install/windows/jdk-installation-windows.html#path>`_
+5. Open a new command prompt and run ``java -version`` to test that Java is installed correctly
 
 Git
 ^^^
@@ -75,7 +91,7 @@ IntelliJ
 ^^^^^^^^
 1. Visit https://www.jetbrains.com/idea/download/download-thanks.html?code=IIC
 2. Download and run the executable to install IntelliJ Community Edition (use the default settings)
-3. Ensure the Kotlin plugin in Intellij is updated to version |kotlin_version|
+3. Ensure the Kotlin plugin in Intellij is updated to version |kotlin_version| (new installs will contains this version)
 
 .. _mac-label:
 
@@ -87,17 +103,15 @@ Mac
 Java
 ^^^^
 1. Visit http://www.oracle.com/technetwork/java/javase/downloads/jdk8-downloads-2133151.html
-2. Scroll down to "Java SE Development Kit 8uXXX" (where "XXX" is the latest minor version number)
-3. Toggle "Accept License Agreement"
-4. Click the download link for jdk-8uXXX-macosx-x64.dmg (where "XXX" is the latest minor version number)
-5. Download and run the executable to install Java (use the default settings)
-6. Open a new terminal window and run ``java -version`` to test that Java is installed correctly
+2. Click the download link for jdk-8uXXX-macosx-x64.dmg (where "XXX" is the latest minor version number)
+3. Download and run the executable to install Java (use the default settings)
+4. Open a new terminal window and run ``java -version`` to test that Java is installed correctly
 
 IntelliJ
 ^^^^^^^^
 1. Visit https://www.jetbrains.com/idea/download/download-thanks.html?platform=mac&code=IIC
 2. Download and run the executable to install IntelliJ Community Edition (use the default settings)
-3. Ensure the Kotlin plugin in Intellij is updated to version |kotlin_version|
+3. Ensure the Kotlin plugin in IntelliJ is updated to version |kotlin_version| (new installs will contains this version)
 
 .. _deb-ubuntu-label:
 
@@ -110,10 +124,36 @@ These instructions were tested on Ubuntu Desktop 18.04 LTS.
 
 Java
 ^^^^
-1. Open a new terminal and add the Oracle PPA to your repositories by typing ``sudo add-apt-repository ppa:webupd8team/java``. Press ENTER when prompted.
-2. Update your packages list with the command ``sudo apt update``
-3. Install the Oracle JDK 8 by typing ``sudo apt install oracle-java8-installer``. Press Y when prompted and agree to the licence terms.
-4. Verify that the JDK was installed correctly by running ``java -version``
+1. Go to https://www.oracle.com/technetwork/java/javase/downloads/java-archive-javase8-2177648.html and download ``jdk-8u202-linux-x64.tar.gz``.
+   You will be redirected to an Oracle login page. Login or create an account to download the JDK.
+2. Extract the archive with ``tar -xvf jdk-8u202-linux-x64.tar.gz jdk1.8.0_202/``
+3. Create a directory to place the JDK e.g. ``sudo mkdir -p /usr/lib/jvm``
+4. Move the extracted archive in that folder with ``sudo mv ./jdk1.8.0_202 /usr/lib/jvm/``
+5. Add the most common java binaries to the list of alternatives to allow easy swap between Java versions in the future
+
+       .. code-block:: shell
+
+         sudo update-alternatives --install "/usr/bin/java" "java" "/usr/lib/jvm/jdk1.8.0_202/bin/java" 1
+         sudo update-alternatives --install "/usr/bin/javac" "javac" "/usr/lib/jvm/jdk1.8.0_202/bin/javac" 1
+         sudo update-alternatives --install "/usr/bin/javaws" "javaws" "/usr/lib/jvm/jdk1.8.0_202/bin/javaws" 1
+
+6. Update permissions
+
+       .. code-block:: shell
+
+         sudo chmod a+x /usr/bin/java
+         sudo chmod a+x /usr/bin/javac
+         sudo chmod a+x /usr/bin/javaws
+         sudo chown -R root:root /usr/lib/jvm/jdk1.8.0_202
+
+7. Set JAVA_HOME and JRE_HOME to your ``~/.bash_profile`` and/or ``~/.bashrc``
+
+       .. code-block:: shell
+
+         export JAVA_HOME=/usr/lib/jvm/jdk1.8.0_202
+         export JRE_HOME=/usr/lib/jvm/jdk1.8.0_202/jre
+
+8. Verify that the JDK was installed correctly by running ``java -version``
 
 Git
 ^^^^
@@ -126,12 +166,12 @@ Jetbrains offers a pre-built snap package that allows for easy, one-step install
 
 1. To download the snap, navigate to https://snapcraft.io/intellij-idea-community
 2. Click ``Install``, then ``View in Desktop Store``. Choose ``Ubuntu Software`` in the Launch Application window.
-3. Ensure the Kotlin plugin in Intellij is updated to version |kotlin_version|
+3. Ensure the Kotlin plugin in Intellij is updated to version |kotlin_version| (new installs will contains this version)
 
 .. _fedora-label:
 
 Fedora
--------------
+------
 
 .. warning:: If you are using a Mac, Windows or Debian/Ubuntu machine, please follow the :ref:`mac-label`, :ref:`windows-label` or :ref:`deb-ubuntu-label` instructions instead.
 
@@ -154,7 +194,7 @@ IntelliJ
 1. Visit https://www.jetbrains.com/idea/download/download-thanks.html?platform=linux&code=IIC
 2. Unpack the ``tar.gz`` file using the following command ``tar xfz ideaIC-<version>.tar.gz -C /opt``
 3. Run IntelliJ with ``/opt/ideaIC-<version>/bin/idea.sh``
-4. Ensure the Kotlin plugin in IntelliJ is updated to version |kotlin_version|
+4. Ensure the Kotlin plugin in IntelliJ is updated to version |kotlin_version| (new installs will contains this version)
 
 
 Next steps

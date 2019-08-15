@@ -6,7 +6,6 @@ import net.corda.core.contracts.*
 import net.corda.core.flows.*
 import net.corda.core.identity.AbstractParty
 import net.corda.core.internal.FlowStateMachine
-import net.corda.core.internal.packageName
 import net.corda.core.internal.uncheckedCast
 import net.corda.core.node.ServicesForResolution
 import net.corda.core.node.services.KeyManagementService
@@ -20,12 +19,14 @@ import net.corda.core.utilities.NonEmptySet
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.getOrThrow
 import net.corda.core.utilities.unwrap
+import net.corda.nodeapi.internal.cordapp.CordappLoader
 import net.corda.node.services.api.VaultServiceInternal
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.testing.core.singleIdentity
+import net.corda.testing.flows.registerCoreFlowFactory
 import net.corda.testing.internal.rigorousMock
 import net.corda.testing.node.internal.InternalMockNetwork
-import net.corda.testing.node.internal.cordappsForPackages
+import net.corda.testing.node.internal.enclosedCordapp
 import net.corda.testing.node.internal.startFlow
 import org.junit.After
 import org.junit.Test
@@ -78,13 +79,14 @@ class VaultSoftLockManagerTest {
         doNothing().whenever(it).softLockRelease(any(), anyOrNull())
     }
 
-    private val mockNet = InternalMockNetwork(cordappsForAllNodes = cordappsForPackages(ContractImpl::class.packageName), defaultFactory = { args ->
+    private val mockNet = InternalMockNetwork(cordappsForAllNodes = listOf(enclosedCordapp()), defaultFactory = { args ->
         object : InternalMockNetwork.MockNode(args) {
             override fun makeVaultService(keyManagementService: KeyManagementService,
                                           services: ServicesForResolution,
-                                          database: CordaPersistence): VaultServiceInternal {
+                                          database: CordaPersistence,
+                                          cordappLoader: CordappLoader): VaultServiceInternal {
                 val node = this
-                val realVault = super.makeVaultService(keyManagementService, services, database)
+                val realVault = super.makeVaultService(keyManagementService, services, database, cordappLoader)
                 return object : VaultServiceInternal by realVault {
                     override fun softLockRelease(lockId: UUID, stateRefs: NonEmptySet<StateRef>?) {
                         // Should be called before flow is removed
@@ -116,10 +118,12 @@ class VaultSoftLockManagerTest {
 
     private abstract class ParticipantState(override val participants: List<AbstractParty>) : ContractState
 
+    @BelongsToContract(ContractImpl::class)
     private class PlainOldState(participants: List<AbstractParty>) : ParticipantState(participants) {
         constructor(nodePair: NodePair) : this(listOf(nodePair.client.info.singleIdentity()))
     }
 
+    @BelongsToContract(ContractImpl::class)
     private class FungibleAssetImpl(participants: List<AbstractParty>) : ParticipantState(participants), FungibleAsset<Unit> {
         constructor(nodePair: NodePair) : this(listOf(nodePair.client.info.singleIdentity()))
 

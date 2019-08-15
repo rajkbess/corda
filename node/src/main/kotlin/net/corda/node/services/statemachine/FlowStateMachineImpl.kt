@@ -10,6 +10,7 @@ import net.corda.core.concurrent.CordaFuture
 import net.corda.core.context.InvocationContext
 import net.corda.core.cordapp.Cordapp
 import net.corda.core.flows.*
+import net.corda.core.identity.AnonymousParty
 import net.corda.core.identity.Party
 import net.corda.core.internal.*
 import net.corda.core.serialization.internal.CheckpointSerializationContext
@@ -18,12 +19,15 @@ import net.corda.core.utilities.ProgressTracker
 import net.corda.core.utilities.Try
 import net.corda.core.utilities.debug
 import net.corda.core.utilities.trace
+import net.corda.node.internal.cordapp.CordappProviderImpl
 import net.corda.node.services.api.FlowAppAuditEvent
 import net.corda.node.services.api.FlowPermissionAuditEvent
 import net.corda.node.services.api.ServiceHubInternal
 import net.corda.node.services.logging.pushToLoggingContext
 import net.corda.node.services.statemachine.transitions.FlowContinuation
 import net.corda.node.services.statemachine.transitions.StateMachine
+import net.corda.node.utilities.errorAndTerminate
+import net.corda.node.utilities.isEnabledTimedFlow
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.DatabaseTransaction
 import net.corda.nodeapi.internal.persistence.contextTransaction
@@ -32,7 +36,6 @@ import org.apache.activemq.artemis.utils.ReusableLatch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.slf4j.MDC
-import java.time.Duration
 import java.util.concurrent.TimeUnit
 import kotlin.reflect.KProperty1
 
@@ -154,18 +157,51 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                 }
                 val continuation = processEvent(transitionExecutor, nextEvent)
                 when (continuation) {
-                    is FlowContinuation.Resume -> return continuation.result
-                    is FlowContinuation.Throw -> {
-                        continuation.throwable.fillInStackTrace()
-                        throw continuation.throwable
+                    is FlowContinuation.Resume -> {
+                        return continuation.result
                     }
+                    is FlowContinuation.Throw -> throw continuation.throwable.fillInLocalStackTrace()
                     FlowContinuation.ProcessEvents -> continue@eventLoop
                     FlowContinuation.Abort -> abortFiber()
                 }
             }
         } finally {
             checkDbTransaction(isDbTransactionOpenOnExit)
+            openThreadLocalWormhole()
         }
+    }
+
+    private fun Throwable.fillInLocalStackTrace(): Throwable {
+        fillInStackTrace()
+        // provide useful information that can be displayed to the user
+        // reflection use to access private field
+        when (this) {
+            is UnexpectedFlowEndException -> {
+                DeclaredField<Party?>(UnexpectedFlowEndException::class.java, "peer", this).value?.let {
+                    stackTrace = arrayOf(
+                        StackTraceElement(
+                            "Received unexpected counter-flow exception from peer ${it.name}",
+                            "",
+                            "",
+                            -1
+                        )
+                    ) + stackTrace
+                }
+            }
+            is FlowException -> {
+                DeclaredField<Party?>(FlowException::class.java, "peer", this).value?.let {
+                    stackTrace = arrayOf(
+                        StackTraceElement(
+                            "Received counter-flow exception from peer ${it.name}",
+                            "",
+                            "",
+                            -1
+                        )
+                    ) + stackTrace
+                }
+            }
+        }
+        return this
     }
 
     /**
@@ -195,7 +231,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                 "Transaction context is missing. This might happen if a suspendable method is not annotated with @Suspendable annotation."
             }
         } else {
-            require(contextTransactionOrNull == null){"Transaction is marked as not present, but is not null"}
+            require(contextTransactionOrNull == null) { "Transaction is marked as not present, but is not null" }
         }
     }
 
@@ -206,28 +242,39 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
         MDC.put("thread-id", Thread.currentThread().id.toString())
     }
 
+    private fun openThreadLocalWormhole() {
+        val threadLocal = getTransientField(TransientValues::database).hikariPoolThreadLocal
+        if (threadLocal != null) {
+            val valueFromThread = swappedOutThreadLocalValue(threadLocal)
+            threadLocal.set(valueFromThread)
+        }
+    }
+
     @Suspendable
     override fun run() {
         logic.progressTracker?.currentStep = ProgressTracker.STARTING
         logic.stateMachine = this
 
+        openThreadLocalWormhole()
         setLoggingContext()
-
         initialiseFlow()
 
         logger.debug { "Calling flow: $logic" }
         val startTime = System.nanoTime()
         val resultOrError = try {
+
+            // This sets the Cordapp classloader on the contextClassLoader of the current thread.
+            // Needed because in previous versions of the finance app we used Thread.contextClassLoader to resolve services defined in cordapps.
+            Thread.currentThread().contextClassLoader = (serviceHub.cordappProvider as CordappProviderImpl).cordappLoader.appClassLoader
+
             val result = logic.call()
             suspend(FlowIORequest.WaitForSessionConfirmations, maySkipCheckpoint = true)
             Try.Success(result)
         } catch (t: Throwable) {
             if(t.isUnrecoverable()) {
-                logger.error("Caught unrecoverable error from flow. Forcibly terminating the JVM, this might leave resources open, and most likely will.", t)
-                Fiber.sleep(Duration.ofSeconds(10).toMillis()) // To allow async logger to flush.
-                Runtime.getRuntime().halt(1)
+                errorAndTerminate("Caught unrecoverable error from flow. Forcibly terminating the JVM, this might leave resources open, and most likely will.", t)
             }
-            logger.info("Flow raised an error... sending it to flow hospital", t)
+            logger.info("Flow raised an error: ${t.message}. Sending it to flow hospital to be triaged.")
             Try.Failure<R>(t)
         }
         val softLocksId = if (hasSoftLockedStates) logic.runId.uuid else null
@@ -273,7 +320,8 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                 Event.EnterSubFlow(subFlow.javaClass,
                         createSubFlowVersion(
                                 serviceHub.cordappProvider.getCordappForFlow(subFlow), serviceHub.myInfo.platformVersion
-                        )
+                        ),
+                        subFlow.isEnabledTimedFlow()
                 ),
                 isDbTransactionOpenOnEntry = true,
                 isDbTransactionOpenOnExit = true
@@ -307,9 +355,10 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
     }
 
     @Suspendable
-    override fun initiateFlow(party: Party): FlowSession {
+    override fun initiateFlow(destination: Destination): FlowSession {
+        require(destination is Party || destination is AnonymousParty) { "Unsupported destination type ${destination.javaClass.name}" }
         val resume = processEventImmediately(
-                Event.InitiateFlow(party),
+                Event.InitiateFlow(destination),
                 isDbTransactionOpenOnEntry = true,
                 isDbTransactionOpenOnExit = true
         ) as FlowContinuation.Resume
@@ -393,7 +442,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                     isDbTransactionOpenOnEntry = true,
                     isDbTransactionOpenOnExit = false
             )
-            require(continuation == FlowContinuation.ProcessEvents){"Expected a continuation of type ${FlowContinuation.ProcessEvents}, found $continuation "}
+            require(continuation == FlowContinuation.ProcessEvents) { "Expected a continuation of type ${FlowContinuation.ProcessEvents}, found $continuation " }
             unpark(SERIALIZER_BLOCKER)
         }
         return uncheckedCast(processEventsUntilFlowIsResumed(

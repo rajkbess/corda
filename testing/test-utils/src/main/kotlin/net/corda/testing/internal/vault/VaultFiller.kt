@@ -7,6 +7,7 @@ import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.AnonymousParty
 import net.corda.core.identity.Party
 import net.corda.core.node.ServiceHub
+import net.corda.core.node.StatesToRecord
 import net.corda.core.node.services.Vault
 import net.corda.core.toFuture
 import net.corda.core.transactions.SignedTransaction
@@ -17,9 +18,13 @@ import net.corda.finance.contracts.DealState
 import net.corda.finance.contracts.asset.Cash
 import net.corda.finance.contracts.asset.Obligation
 import net.corda.finance.contracts.asset.OnLedgerAsset
+import net.corda.finance.workflows.asset.CashUtils
 import net.corda.testing.contracts.DummyContract
 import net.corda.testing.contracts.DummyState
-import net.corda.testing.core.*
+import net.corda.testing.core.DummyCommandData
+import net.corda.testing.core.TestIdentity
+import net.corda.testing.core.dummyCommand
+import net.corda.testing.core.singleIdentity
 import net.corda.testing.internal.chooseIdentity
 import net.corda.testing.internal.chooseIdentityAndCert
 import java.security.PublicKey
@@ -72,20 +77,23 @@ class VaultFiller @JvmOverloads constructor(
     @JvmOverloads
     fun fillWithSomeTestDeals(dealIds: List<String>,
                               issuerServices: ServiceHub = services,
-                              participants: List<AbstractParty> = emptyList()): Vault<DealState> {
+                              participants: List<AbstractParty> = emptyList(),
+                              includeMe: Boolean = true): Vault<DealState> {
         val myKey: PublicKey = services.myInfo.chooseIdentity().owningKey
         val me = AnonymousParty(myKey)
+        val participantsToUse = if (includeMe) participants.plus(me) else participants
 
         val transactions: List<SignedTransaction> = dealIds.map {
             // Issue a deal state
             val dummyIssue = TransactionBuilder(notary = defaultNotary.party).apply {
-                addOutputState(DummyDealContract.State(ref = it, participants = participants.plus(me)), DUMMY_DEAL_PROGRAM_ID)
+                addOutputState(DummyDealContract.State(ref = it, participants = participantsToUse), DUMMY_DEAL_PROGRAM_ID)
                 addCommand(dummyCommand())
             }
             val stx = issuerServices.signInitialTransaction(dummyIssue)
             return@map services.addSignature(stx, defaultNotary.publicKey)
         }
-        services.recordTransactions(transactions)
+        val statesToRecord = if (includeMe) StatesToRecord.ONLY_RELEVANT else StatesToRecord.ALL_VISIBLE
+        services.recordTransactions(statesToRecord, transactions)
         // Get all the StateAndRefs of all the generated transactions.
         val states = transactions.flatMap { stx ->
             stx.tx.outputs.indices.map { i -> stx.tx.outRef<DealState>(i) }
@@ -103,17 +111,19 @@ class VaultFiller @JvmOverloads constructor(
                                      linearNumber: Long = 0L,
                                      linearBoolean: Boolean = false,
                                      linearTimestamp: Instant = now(),
-                                     constraint: AttachmentConstraint = AutomaticPlaceholderConstraint): Vault<LinearState> {
+                                     constraint: AttachmentConstraint = AutomaticPlaceholderConstraint,
+                                     includeMe: Boolean = true): Vault<LinearState> {
         val myKey: PublicKey = services.myInfo.chooseIdentity().owningKey
         val me = AnonymousParty(myKey)
         val issuerKey = defaultNotary.keyPair
         val signatureMetadata = SignatureMetadata(services.myInfo.platformVersion, Crypto.findSignatureScheme(issuerKey.public).schemeNumberID)
+        val participantsToUse = if (includeMe) participants.plus(me) else participants
         val transactions: List<SignedTransaction> = (1..numberToCreate).map {
             // Issue a Linear state
             val dummyIssue = TransactionBuilder(notary = defaultNotary.party).apply {
                 addOutputState(DummyLinearContract.State(
                         linearId = uniqueIdentifier ?: UniqueIdentifier(externalId),
-                        participants = participants.plus(me),
+                        participants = participantsToUse,
                         linearString = linearString,
                         linearNumber = linearNumber,
                         linearBoolean = linearBoolean,
@@ -123,7 +133,8 @@ class VaultFiller @JvmOverloads constructor(
             }
             return@map services.signInitialTransaction(dummyIssue).withAdditionalSignature(issuerKey, signatureMetadata)
         }
-        services.recordTransactions(transactions)
+        val statesToRecord = if (includeMe) StatesToRecord.ONLY_RELEVANT else StatesToRecord.ALL_VISIBLE
+        services.recordTransactions(statesToRecord, transactions)
         // Get all the StateAndRefs of all the generated transactions.
         val states = transactions.flatMap { stx ->
             stx.tx.outputs.indices.map { i -> stx.tx.outRef<LinearState>(i) }
@@ -174,7 +185,8 @@ class VaultFiller @JvmOverloads constructor(
                              thisManyStates: Int,
                              issuedBy: PartyAndReference,
                              owner: AbstractParty? = null,
-                             rng: Random? = null) = fillWithSomeTestCash(howMuch, issuerServices, thisManyStates, thisManyStates, issuedBy, owner, rng)
+                             rng: Random? = null,
+                             statesToRecord: StatesToRecord = StatesToRecord.ONLY_RELEVANT) = fillWithSomeTestCash(howMuch, issuerServices, thisManyStates, thisManyStates, issuedBy, owner, rng, statesToRecord)
 
     /**
      * Creates a random set of between (by default) 3 and 10 cash states that add up to the given amount and adds them
@@ -190,7 +202,8 @@ class VaultFiller @JvmOverloads constructor(
                              atMostThisManyStates: Int,
                              issuedBy: PartyAndReference,
                              owner: AbstractParty? = null,
-                             rng: Random? = null): Vault<Cash.State> {
+                             rng: Random? = null,
+                             statesToRecord: StatesToRecord = StatesToRecord.ONLY_RELEVANT): Vault<Cash.State> {
         val amounts = calculateRandomlySizedAmounts(howMuch, atLeastThisManyStates, atMostThisManyStates, rng ?: rngFactory())
         // We will allocate one state to one transaction, for simplicities sake.
         val cash = Cash()
@@ -199,7 +212,7 @@ class VaultFiller @JvmOverloads constructor(
             cash.generateIssue(issuance, Amount(pennies, Issued(issuedBy, howMuch.token)), owner ?: services.myInfo.singleIdentity(), altNotary)
             return@map issuerServices.signInitialTransaction(issuance, issuedBy.party.owningKey)
         }
-        services.recordTransactions(transactions)
+        services.recordTransactions(statesToRecord, transactions)
         // Get all the StateRefs of all the generated transactions.
         val states = transactions.flatMap { stx ->
             stx.tx.outputs.indices.map { i -> stx.tx.outRef<Cash.State>(i) }
@@ -299,7 +312,7 @@ class VaultFiller @JvmOverloads constructor(
         val update = services.vaultService.rawUpdates.toFuture()
         // A tx that spends our money.
         val builder = TransactionBuilder(altNotary).apply {
-            Cash.generateSpend(services, this, amount, ourIdentity, to)
+            CashUtils.generateSpend(services, this, amount, ourIdentity, to)
         }
         val spendTx = services.signInitialTransaction(builder, altNotary.owningKey)
         services.recordTransactions(spendTx)

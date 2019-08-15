@@ -42,6 +42,9 @@ import net.corda.nodeapi.BrokerRpcSslOptions
 import net.corda.nodeapi.internal.config.User
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
 import net.corda.nodeapi.internal.persistence.TransactionIsolationLevel
+import net.corda.nodeapi.internal.persistence.SchemaInitializationType
+import net.corda.notary.experimental.bftsmart.BFTSmartConfig
+import net.corda.notary.experimental.raft.RaftConfig
 import net.corda.tools.shell.SSHDConfiguration
 
 internal object UserSpec : Configuration.Specification<User>("User") {
@@ -164,14 +167,37 @@ internal object FlowTimeoutConfigurationSpec : Configuration.Specification<FlowT
 internal object NotaryConfigSpec : Configuration.Specification<NotaryConfig>("NotaryConfig") {
     private val validating by boolean()
     private val serviceLegalName by string().mapValid(::toCordaX500Name).optional()
-    private val className by string().optional().withDefaultValue("net.corda.node.services.transactions.SimpleNotaryService")
+    private val className by string().optional()
     private val etaMessageThresholdSeconds by int().optional().withDefaultValue(NotaryServiceFlow.defaultEstimatedWaitTime.seconds.toInt())
     private val extraConfig by nestedObject().map(ConfigObject::toConfig).optional()
+    private val raft by nested(RaftConfigSpec).optional()
+    private val bftSMaRt by nested(BFTSmartConfigSpec).optional()
 
     override fun parseValid(configuration: Config): Valid<NotaryConfig> {
-        return valid(NotaryConfig(configuration[validating], configuration[serviceLegalName], configuration[className], configuration[etaMessageThresholdSeconds], configuration[extraConfig]))
+        return valid(NotaryConfig(configuration[validating], configuration[serviceLegalName], configuration[className], configuration[etaMessageThresholdSeconds], configuration[extraConfig], configuration[raft], configuration[bftSMaRt]))
     }
 }
+
+internal object RaftConfigSpec : Configuration.Specification<RaftConfig>("RaftConfig") {
+    private val nodeAddress by string().mapValid(::toNetworkHostAndPort)
+    private val clusterAddresses by string().mapValid(::toNetworkHostAndPort).listOrEmpty()
+
+    override fun parseValid(configuration: Config): Valid<RaftConfig> {
+        return valid(RaftConfig(configuration[nodeAddress], configuration[clusterAddresses]))
+    }
+}
+
+internal object BFTSmartConfigSpec : Configuration.Specification<BFTSmartConfig>("BFTSmartConfig") {
+    private val replicaId by int()
+    private val clusterAddresses by string().mapValid(::toNetworkHostAndPort).listOrEmpty()
+    private val debug by boolean().optional().withDefaultValue(false)
+    private val exposeRaces by boolean().optional().withDefaultValue(false)
+
+    override fun parseValid(configuration: Config): Valid<BFTSmartConfig> {
+        return valid(BFTSmartConfig(configuration[replicaId], configuration[clusterAddresses], configuration[debug], configuration[exposeRaces]))
+    }
+}
+
 
 internal object NodeRpcSettingsSpec : Configuration.Specification<NodeRpcSettings>("NodeRpcSettings") {
     internal object BrokerRpcSslOptionsSpec : Configuration.Specification<BrokerRpcSslOptions>("BrokerRpcSslOptions") {
@@ -203,12 +229,13 @@ internal object SSHDConfigurationSpec : Configuration.Specification<SSHDConfigur
 
 internal object DatabaseConfigSpec : Configuration.Specification<DatabaseConfig>("DatabaseConfig") {
     private val initialiseSchema by boolean().optional().withDefaultValue(DatabaseConfig.Defaults.initialiseSchema)
+    private val initialiseAppSchema by enum(SchemaInitializationType::class).optional().withDefaultValue(DatabaseConfig.Defaults.initialiseAppSchema)
     private val transactionIsolationLevel by enum(TransactionIsolationLevel::class).optional().withDefaultValue(DatabaseConfig.Defaults.transactionIsolationLevel)
     private val exportHibernateJMXStatistics by boolean().optional().withDefaultValue(DatabaseConfig.Defaults.exportHibernateJMXStatistics)
     private val mappedSchemaCacheSize by long().optional().withDefaultValue(DatabaseConfig.Defaults.mappedSchemaCacheSize)
 
     override fun parseValid(configuration: Config): Valid<DatabaseConfig> {
-        return valid(DatabaseConfig(configuration[initialiseSchema], configuration[transactionIsolationLevel], configuration[exportHibernateJMXStatistics], configuration[mappedSchemaCacheSize]))
+        return valid(DatabaseConfig(configuration[initialiseSchema], configuration[initialiseAppSchema], configuration[transactionIsolationLevel], configuration[exportHibernateJMXStatistics], configuration[mappedSchemaCacheSize]))
     }
 }
 

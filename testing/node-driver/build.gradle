@@ -25,20 +25,25 @@ sourceSets {
 }
 
 dependencies {
-    // Bundling in the Raft notary service for tests involving distributed notaries
-    compile project(':experimental:notary-raft')
     compile project(':test-utils')
 
     // Integration test helpers
     testCompile "org.assertj:assertj-core:$assertj_version"
-    integrationTestCompile "junit:junit:$junit_version"
+    integrationTestImplementation "junit:junit:$junit_version"
+    integrationTestImplementation "org.junit.jupiter:junit-jupiter-api:${junit_jupiter_version}"
+
+    integrationTestRuntimeOnly "org.junit.vintage:junit-vintage-engine:${junit_vintage_version}"
+    integrationTestRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:${junit_jupiter_version}"
+    integrationTestRuntimeOnly "org.junit.platform:junit-platform-launcher:${junit_platform_version}"
 
     // Jetty dependencies for NetworkMapClient test.
     // Web stuff: for HTTP[S] servlets
     compile "org.eclipse.jetty:jetty-servlet:${jetty_version}"
     compile "org.eclipse.jetty:jetty-webapp:${jetty_version}"
-    compile "javax.servlet:javax.servlet-api:3.1.0"
+    compile "javax.servlet:javax.servlet-api:${servlet_version}"
 
+    compile "org.gradle:gradle-tooling-api:${gradle.gradleVersion}"
+    
     // Jersey for JAX-RS implementation for use in Jetty
     compile "org.glassfish.jersey.core:jersey-server:${jersey_version}"
     compile "org.glassfish.jersey.containers:jersey-container-servlet-core:${jersey_version}"
@@ -56,4 +61,16 @@ jar {
 
 publish {
     name jar.baseName
+}
+
+scanApi {
+    //Constructors that are synthesized by Kotlin unexpectedly
+    excludeMethods = [
+        "net.corda.testing.node.MockServices": [
+            "<init>(Lnet/corda/node/cordapp/CordappLoader;Lnet/corda/core/node/services/IdentityService;Lnet/corda/core/node/NetworkParameters;Lnet/corda/testing/core/TestIdentity;[Ljava/security/KeyPair;Lkotlin/jvm/internal/DefaultConstructorMarker;)V"
+        ],
+        "net.corda.testing.node.InMemoryMessagingNetwork\$MessageTransfer": [
+            "<init>(Lnet/corda/testing/node/InMemoryMessagingNetwork\$PeerHandle;Lnet/corda/node/services/messaging/Message;Lnet/corda/core/messaging/MessageRecipients;Lkotlin/jvm/internal/DefaultConstructorMarker;)V"
+        ]
+    ]
 }

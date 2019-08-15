@@ -2,22 +2,41 @@ apply plugin: 'kotlin'
 apply plugin: 'net.corda.plugins.cordapp'
 apply plugin: 'net.corda.plugins.cordformation'
 
-dependencies {
-    cordaCompile project(':core')
-    cordaCompile project(':node-api')
+cordapp {
+    info {
+        name "Corda Network Verifier"
+        vendor "R3"
+        targetPlatformVersion corda_platform_version.toInteger()
+        minimumPlatformVersion 1
+    }
+}
 
-    testCompile project(":test-utils")
-    testCompile "junit:junit:$junit_version"
+dependencies {
+    // Cordformation needs this for the Network Bootstrapper.
+    runtimeOnly project(':node-api')
+
+    // Cordformation needs a SLF4J implementation when executing the Network
+    // Bootstrapper, but Log4J doesn't shutdown completely from within Gradle.
+    // Use a much simpler SLF4J implementation here instead.
+    cordaRuntime "org.slf4j:slf4j-simple:$slf4j_version"
 
     // Corda integration dependencies
     cordaRuntime project(path: ":node:capsule", configuration: 'runtimeArtifacts')
+
+    cordapp project(':samples:network-verifier:contracts')
+    cordapp project(':samples:network-verifier:workflows')
 }
 
 def nodeTask = tasks.getByPath(':node:capsule:assemble')
 task deployNodes(type: net.corda.plugins.Cordform, dependsOn: ['jar', nodeTask]) {
     ext.rpcUsers = [['username': "default", 'password': "default", 'permissions': [ 'ALL' ]]]
-
-    directory "./build/nodes"
+    nodeDefaults{
+        projectCordapp {
+            deploy = false
+        }
+        cordapp project(':samples:network-verifier:contracts')
+        cordapp project(':samples:network-verifier:workflows')
+    }
     node {
         name "O=Notary Service,L=Zurich,C=CH"
         notary = [validating : false]
@@ -49,14 +68,5 @@ task deployNodes(type: net.corda.plugins.Cordform, dependsOn: ['jar', nodeTask])
             adminPort 10012
         }
         extraConfig = ['h2Settings.address' : 'localhost:0']
-    }
-}
-
-cordapp {
-    info {
-        name "net/corda/samples/network-verifier"
-        vendor "Corda Open Source"
-        targetPlatformVersion corda_platform_version.toInteger()
-        minimumPlatformVersion 1
     }
 }

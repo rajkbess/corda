@@ -3,7 +3,7 @@
 package net.corda.client.jackson.internal
 
 import com.fasterxml.jackson.annotation.*
-import com.fasterxml.jackson.annotation.JsonCreator.Mode.*
+import com.fasterxml.jackson.annotation.JsonCreator.Mode.DISABLED
 import com.fasterxml.jackson.annotation.JsonInclude.Include
 import com.fasterxml.jackson.core.JsonGenerator
 import com.fasterxml.jackson.core.JsonParseException
@@ -15,21 +15,26 @@ import com.fasterxml.jackson.databind.annotation.JsonSerialize
 import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier
 import com.fasterxml.jackson.databind.deser.ContextualDeserializer
 import com.fasterxml.jackson.databind.deser.std.DelegatingDeserializer
+import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer
 import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.databind.node.IntNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.databind.ser.BeanPropertyWriter
 import com.fasterxml.jackson.databind.ser.BeanSerializerModifier
+import com.fasterxml.jackson.databind.ser.std.StdScalarSerializer
+import com.fasterxml.jackson.databind.ser.std.UUIDSerializer
 import com.google.common.primitives.Booleans
 import net.corda.client.jackson.JacksonSupport
 import net.corda.core.contracts.*
 import net.corda.core.crypto.*
 import net.corda.core.crypto.PartialMerkleTree.PartialTree
+import net.corda.core.flows.StateMachineRunId
 import net.corda.core.identity.*
 import net.corda.core.internal.DigitalSignatureWithCert
 import net.corda.core.internal.createComponentGroups
 import net.corda.core.internal.kotlinObjectInstance
 import net.corda.core.node.NodeInfo
+import net.corda.core.serialization.SerializeAsToken
 import net.corda.core.serialization.SerializedBytes
 import net.corda.core.serialization.deserialize
 import net.corda.core.serialization.serialize
@@ -39,8 +44,8 @@ import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.parseAsHex
 import net.corda.core.utilities.toHexString
 import net.corda.serialization.internal.AllWhitelist
-import net.corda.serialization.internal.amqp.*
-import net.corda.serialization.internal.model.LocalTypeInformation
+import net.corda.serialization.internal.amqp.SerializerFactoryBuilder
+import net.corda.serialization.internal.amqp.hasCordaSerializable
 import java.math.BigDecimal
 import java.security.PublicKey
 import java.security.cert.CertPath
@@ -79,6 +84,7 @@ class CordaModule : SimpleModule("corda-core") {
         context.setMixInAnnotations(SignatureMetadata::class.java, SignatureMetadataMixin::class.java)
         context.setMixInAnnotations(PartialTree::class.java, PartialTreeMixin::class.java)
         context.setMixInAnnotations(NodeInfo::class.java, NodeInfoMixin::class.java)
+        context.setMixInAnnotations(StateMachineRunId::class.java, StateMachineRunIdMixin::class.java)
     }
 }
 
@@ -93,7 +99,7 @@ private class CordaSerializableBeanSerializerModifier : BeanSerializerModifier()
                                   beanDesc: BeanDescription,
                                   beanProperties: MutableList<BeanPropertyWriter>): MutableList<BeanPropertyWriter> {
         val beanClass = beanDesc.beanClass
-        if (hasCordaSerializable(beanClass) && beanClass.kotlinObjectInstance == null) {
+        if (hasCordaSerializable(beanClass) && beanClass.kotlinObjectInstance == null && !SerializeAsToken::class.java.isAssignableFrom(beanClass)) {
             val typeInformation = serializerFactory.getTypeInformation(beanClass)
             val properties = typeInformation.propertiesOrEmptyMap
             val amqpProperties = properties.mapNotNull { (name, property) ->
@@ -417,6 +423,28 @@ private interface SecureHashSHA256Mixin
 @JsonSerialize(using = JacksonSupport.PublicKeySerializer::class)
 @JsonDeserialize(using = JacksonSupport.PublicKeyDeserializer::class)
 private interface PublicKeyMixin
+
+@JsonSerialize(using = StateMachineRunIdSerializer::class)
+@JsonDeserialize(using = StateMachineRunIdDeserializer::class)
+private interface StateMachineRunIdMixin
+
+private class StateMachineRunIdSerializer : StdScalarSerializer<StateMachineRunId>(StateMachineRunId::class.java) {
+    private val uuidSerializer = UUIDSerializer()
+
+    override fun isEmpty(provider: SerializerProvider?, value: StateMachineRunId): Boolean {
+        return uuidSerializer.isEmpty(provider, value.uuid)
+    }
+
+    override fun serialize(value: StateMachineRunId, gen: JsonGenerator?, provider: SerializerProvider?) {
+        uuidSerializer.serialize(value.uuid, gen, provider)
+    }
+}
+
+private class StateMachineRunIdDeserializer : FromStringDeserializer<StateMachineRunId>(StateMachineRunId::class.java) {
+    override fun _deserialize(value: String, ctxt: DeserializationContext?): StateMachineRunId {
+        return StateMachineRunId(UUID.fromString(value))
+    }
+}
 
 @Suppress("unused_parameter")
 @ToStringSerialize

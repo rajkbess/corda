@@ -8,23 +8,45 @@ import liquibase.database.Database
 import liquibase.database.DatabaseFactory
 import liquibase.database.jvm.JdbcConnection
 import liquibase.resource.ClassLoaderResourceAccessor
+import net.corda.core.identity.CordaX500Name
 import net.corda.nodeapi.internal.MigrationHelpers.getMigrationResource
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.utilities.contextLogger
+import net.corda.nodeapi.internal.cordapp.CordappLoader
 import java.io.ByteArrayInputStream
 import java.io.InputStream
-import java.io.Writer
+import java.nio.file.Path
+import java.sql.Statement
 import javax.sql.DataSource
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
+// Migrate the database to the current version, using liquibase.
+//
+// A note on the ourName parameter: This is used by the vault state migration to establish what the node's legal identity is when setting up
+// its copy of the identity service. It is passed through using a system property. When multiple identity support is added, this will need
+// reworking so that multiple identities can be passed to the migration.
 class SchemaMigration(
         val schemas: Set<MappedSchema>,
         val dataSource: DataSource,
         private val databaseConfig: DatabaseConfig,
-        private val classLoader: ClassLoader = Thread.currentThread().contextClassLoader) {
+        cordappLoader: CordappLoader? = null,
+        private val currentDirectory: Path?,
+        private val ourName: CordaX500Name) {
 
     companion object {
         private val logger = contextLogger()
+        const val NODE_BASE_DIR_KEY = "liquibase.nodeDaseDir"
+        const val NODE_X500_NAME = "liquibase.nodeName"
+        val loader = ThreadLocal<CordappLoader>()
+        private val mutex = ReentrantLock()
     }
+
+    init {
+        loader.set(cordappLoader)
+    }
+
+    private val classLoader = cordappLoader?.appClassLoader ?: Thread.currentThread().contextClassLoader
 
     /**
      * Main entry point to the schema migration.
@@ -76,26 +98,39 @@ class SchemaMigration(
 
             // Collect all changelog file referenced in the included schemas.
             // For backward compatibility reasons, when failOnMigrationMissing=false, we don't manage CorDapps via Liquibase but use the hibernate hbm2ddl=update.
-            val changelogList = schemas.map { mappedSchema ->
+            val changelogList = schemas.mapNotNull { mappedSchema ->
                 val resource = getMigrationResource(mappedSchema, classLoader)
                 when {
                     resource != null -> resource
+                    // Corda OS FinanceApp in v3 has no Liquibase script, so no error is raised
+                    (mappedSchema::class.qualifiedName == "net.corda.finance.schemas.CashSchemaV1" || mappedSchema::class.qualifiedName == "net.corda.finance.schemas.CommercialPaperSchemaV1") && mappedSchema.migrationResource == null -> null
                     else -> throw MissingMigrationException(mappedSchema)
                 }
             }
 
+            val path = currentDirectory?.toString()
+            if (path != null) {
+                System.setProperty(NODE_BASE_DIR_KEY, path) // base dir for any custom change set which may need to load a file (currently AttachmentVersionNumberMigration)
+            }
+            System.setProperty(NODE_X500_NAME, ourName.toString())
             val customResourceAccessor = CustomResourceAccessor(dynamicInclude, changelogList, classLoader)
+            checkResourcesInClassPath(changelogList)
 
-            val liquibase = Liquibase(dynamicInclude, customResourceAccessor, getLiquibaseDatabase(JdbcConnection(connection)))
+            // current version of Liquibase appears to be non-threadsafe
+            // this is apparent when multiple in-process nodes are all running migrations simultaneously
+            mutex.withLock {
+                val liquibase = Liquibase(dynamicInclude, customResourceAccessor, getLiquibaseDatabase(JdbcConnection(connection)))
 
-            val unRunChanges = liquibase.listUnrunChangeSets(Contexts(), LabelExpression())
+                val unRunChanges = liquibase.listUnrunChangeSets(Contexts(), LabelExpression())
 
-            when {
-                (run && !check) && (unRunChanges.isNotEmpty() && existingCheckpoints!!) -> throw CheckpointsException() // Do not allow database migration when there are checkpoints
-                run && !check -> liquibase.update(Contexts())
-                check && !run && unRunChanges.isNotEmpty() -> throw OutstandingDatabaseChangesException(unRunChanges.size)
-                check && !run -> {} // Do nothing will be interpreted as "check succeeded"
-                else -> throw IllegalStateException("Invalid usage.")
+                when {
+                    (run && !check) && (unRunChanges.isNotEmpty() && existingCheckpoints!!) -> throw CheckpointsException() // Do not allow database migration when there are checkpoints
+                    run && !check -> liquibase.update(Contexts())
+                    check && !run && unRunChanges.isNotEmpty() -> throw OutstandingDatabaseChangesException(unRunChanges.size)
+                    check && !run -> {
+                    } // Do nothing will be interpreted as "check succeeded"
+                    else -> throw IllegalStateException("Invalid usage.")
+                }
             }
         }
     }
@@ -104,60 +139,92 @@ class SchemaMigration(
         return DatabaseFactory.getInstance().findCorrectDatabaseImplementation(conn)
     }
 
-    /** For existing database created before verions 4.0 add Liquibase support - creates DATABASECHANGELOG and DATABASECHANGELOGLOCK tables and mark changesets are executed. */
+    /** For existing database created before verions 4.0 add Liquibase support - creates DATABASECHANGELOG and DATABASECHANGELOGLOCK tables and marks changesets as executed. */
     private fun migrateOlderDatabaseToUseLiquibase(existingCheckpoints: Boolean): Boolean {
-        //workaround to detect that if Corda finance module is in use then the most recent version with Liquibase migration scripts was deployed
-        if (schemas.any { schema ->
-                    (schema::class.qualifiedName == "net.corda.finance.schemas.CashSchemaV1" || schema::class.qualifiedName == "net.corda.finance.schemas.CommercialPaperSchemaV1")
-                            && schema.migrationResource == null
-                })
-            throw DatabaseMigrationException("Detected incompatible corda-finance cordapp without database migration scripts, replace the existing corda-finance-VERSION.jar with the latest one.")
-
-        val isExistingDBWithoutLiquibase = dataSource.connection.use {
-            (it.metaData.getTables(null, null, "NODE%", null).next() &&
-                    !it.metaData.getTables(null, null, "DATABASECHANGELOG%", null).next())
+        val isFinanceAppWithLiquibase = schemas.any { schema ->
+            (schema::class.qualifiedName == "net.corda.finance.schemas.CashSchemaV1"
+                    || schema::class.qualifiedName == "net.corda.finance.schemas.CommercialPaperSchemaV1")
+                    && schema.migrationResource != null
         }
-        when {
-            isExistingDBWithoutLiquibase && existingCheckpoints -> throw CheckpointsException()
-            isExistingDBWithoutLiquibase -> {
-                // Virtual file name of the changelog that includes all schemas.
-                val dynamicInclude = "master.changelog.json"
+        val noLiquibaseEntryLogForFinanceApp: (Statement) -> Boolean = {
+            it.execute("SELECT COUNT(*) FROM DATABASECHANGELOG WHERE FILENAME IN ('migration/cash.changelog-init.xml','migration/commercial-paper.changelog-init.xml')")
+            if (it.resultSet.next())
+                it.resultSet.getInt(1) == 0
+            else
+                true
+        }
 
-                dataSource.connection.use { connection ->
-                    // Schema migrations pre release 4.0
-                    val preV4Baseline = mutableListOf("migration/common.changelog-init.xml",
-                            "migration/node-info.changelog-init.xml",
-                            "migration/node-info.changelog-v1.xml",
-                            "migration/node-info.changelog-v2.xml",
-                            "migration/node-core.changelog-init.xml",
-                            "migration/node-core.changelog-v3.xml",
-                            "migration/node-core.changelog-v4.xml",
-                            "migration/node-core.changelog-v5.xml",
-                            "migration/node-core.changelog-pkey.xml",
-                            "migration/vault-schema.changelog-init.xml",
-                            "migration/vault-schema.changelog-v3.xml",
-                            "migration/vault-schema.changelog-v4.xml",
-                            "migration/vault-schema.changelog-pkey.xml")
+        val (isExistingDBWithoutLiquibase, isFinanceAppWithLiquibaseNotMigrated) = dataSource.connection.use {
 
-                    if (schemas.any { schema -> schema.migrationResource == "cash.changelog-master" })
-                        preV4Baseline.addAll(listOf("migration/cash.changelog-init.xml",
-                                "migration/cash.changelog-v1.xml"))
+            val existingDatabase = it.metaData.getTables(null, null, "NODE%", null).next()
 
-                    if (schemas.any { schema -> schema.migrationResource == "commercial-paper.changelog-master" })
-                        preV4Baseline.addAll(listOf("migration/commercial-paper.changelog-init.xml",
-                                "migration/commercial-paper.changelog-v1.xml"))
+            val hasLiquibase = it.metaData.getTables(null, null, "DATABASECHANGELOG%", null).next()
 
-                    if (schemas.any { schema -> schema.migrationResource == "node-notary.changelog-master" })
-                        preV4Baseline.addAll(listOf("migration/node-notary.changelog-init.xml",
-                                "migration/node-notary.changelog-v1.xml"))
+            val isFinanceAppWithLiquibaseNotMigrated = isFinanceAppWithLiquibase // If Finance App is pre v4.0 then no need to migrate it so no need to check.
+                    && existingDatabase
+                    && (!hasLiquibase // Migrate as other tables.
+                         || (hasLiquibase && it.createStatement().use { noLiquibaseEntryLogForFinanceApp(it) })) // If Liquibase is already in the database check if Finance App schema log is missing.
 
-                    val customResourceAccessor = CustomResourceAccessor(dynamicInclude, preV4Baseline, classLoader)
-                    val liquibase = Liquibase(dynamicInclude, customResourceAccessor, getLiquibaseDatabase(JdbcConnection(connection)))
-                    liquibase.changeLogSync(Contexts(), LabelExpression())
-                }
+            Pair(existingDatabase && !hasLiquibase, isFinanceAppWithLiquibaseNotMigrated)
+        }
+
+        if (isExistingDBWithoutLiquibase && existingCheckpoints)
+            throw CheckpointsException()
+
+        // Schema migrations pre release 4.0
+        val preV4Baseline = mutableListOf<String>()
+        if (isExistingDBWithoutLiquibase) {
+            preV4Baseline.addAll(listOf("migration/common.changelog-init.xml",
+                    "migration/node-info.changelog-init.xml",
+                    "migration/node-info.changelog-v1.xml",
+                    "migration/node-info.changelog-v2.xml",
+                    "migration/node-core.changelog-init.xml",
+                    "migration/node-core.changelog-v3.xml",
+                    "migration/node-core.changelog-v4.xml",
+                    "migration/node-core.changelog-v5.xml",
+                    "migration/node-core.changelog-pkey.xml",
+                    "migration/vault-schema.changelog-init.xml",
+                    "migration/vault-schema.changelog-v3.xml",
+                    "migration/vault-schema.changelog-v4.xml",
+                    "migration/vault-schema.changelog-pkey.xml"))
+
+            if (schemas.any { schema -> schema.migrationResource == "node-notary.changelog-master" })
+                preV4Baseline.addAll(listOf("migration/node-notary.changelog-init.xml",
+                        "migration/node-notary.changelog-v1.xml"))
+
+            if (schemas.any { schema -> schema.migrationResource == "notary-raft.changelog-master" })
+                preV4Baseline.addAll(listOf("migration/notary-raft.changelog-init.xml",
+                        "migration/notary-raft.changelog-v1.xml"))
+
+            if (schemas.any { schema -> schema.migrationResource == "notary-bft-smart.changelog-master" })
+                preV4Baseline.addAll(listOf("migration/notary-bft-smart.changelog-init.xml",
+                        "migration/notary-bft-smart.changelog-v1.xml"))
+        }
+        if (isFinanceAppWithLiquibaseNotMigrated) {
+            preV4Baseline.addAll(listOf("migration/cash.changelog-init.xml",
+                    "migration/cash.changelog-v1.xml",
+                    "migration/commercial-paper.changelog-init.xml",
+                    "migration/commercial-paper.changelog-v1.xml"))
+        }
+
+        if (preV4Baseline.isNotEmpty()) {
+            val dynamicInclude = "master.changelog.json" // Virtual file name of the changelog that includes all schemas.
+            checkResourcesInClassPath(preV4Baseline)
+            dataSource.connection.use { connection ->
+                val customResourceAccessor = CustomResourceAccessor(dynamicInclude, preV4Baseline, classLoader)
+                val liquibase = Liquibase(dynamicInclude, customResourceAccessor, getLiquibaseDatabase(JdbcConnection(connection)))
+                liquibase.changeLogSync(Contexts(), LabelExpression())
             }
         }
-        return isExistingDBWithoutLiquibase
+        return isExistingDBWithoutLiquibase || isFinanceAppWithLiquibaseNotMigrated
+    }
+
+    private fun checkResourcesInClassPath(resources: List<String?>) {
+        for (resource in resources) {
+            if (resource != null && classLoader.getResource(resource) == null) {
+                throw DatabaseMigrationException("Could not find Liquibase database migration script $resource. Please ensure the jar file containing it is deployed in the cordapps directory.")
+            }
+        }
     }
 }
 

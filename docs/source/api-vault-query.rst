@@ -64,7 +64,8 @@ filter criteria:
 - Use ``queryBy`` to obtain a current snapshot of data (for a given ``QueryCriteria``)
 - Use ``trackBy`` to obtain both a current snapshot and a future stream of updates (for a given ``QueryCriteria``)
   
-.. note:: Streaming updates are only filtered based on contract type and state status (UNCONSUMED, CONSUMED, ALL)
+.. note:: Streaming updates are only filtered based on contract type and state status (UNCONSUMED, CONSUMED, ALL).
+          They will not respect any other criteria that the initial query has been filtered by.
 
 Simple pagination (page number and size) and sorting (directional ordering using standard or custom property
 attributes) is also specifiable. Defaults are defined for paging (pageNumber = 1, pageSize = 200) and sorting
@@ -85,7 +86,7 @@ There are four implementations of this interface which can be chained together t
 
 1. ``VaultQueryCriteria`` provides filterable criteria on attributes within the Vault states table: status (UNCONSUMED,
    CONSUMED), state reference(s), contract state type(s), notaries, soft locked states, timestamps (RECORDED, CONSUMED),
-   state constraints (see :ref:`Constraint Types <implicit_constraint_types>`).
+   state constraints (see :ref:`Constraint Types <implicit_constraint_types>`), relevancy (ALL, RELEVANT, NON_RELEVANT).
 
 	.. note:: Sensible defaults are defined for frequently used attributes (status = UNCONSUMED, always include soft
 	   locked states).
@@ -329,6 +330,14 @@ pages available:
     :end-before: DOCEND VaultQueryExample24
     :dedent: 8
 
+Query for only relevant states in the vault:
+
+.. literalinclude:: ../../node/src/test/kotlin/net/corda/node/services/vault/VaultQueryTests.kt
+    :language: kotlin
+    :start-after: DOCSTART VaultQueryExample25
+    :end-before: DOCEND VaultQueryExample25
+    :dedent: 8
+
 **LinearState and DealState queries using** ``LinearStateQueryCriteria``:
 
 Query for unconsumed linear states for given linear ids:
@@ -363,6 +372,14 @@ Query for unconsumed deal states with deals parties:
     :end-before: DOCEND VaultQueryExample11
     :dedent: 12
 
+Query for only relevant linear states in the vault:
+
+.. literalinclude:: ../../node/src/test/kotlin/net/corda/node/services/vault/VaultQueryTests.kt
+    :language: kotlin
+    :start-after: DOCSTART VaultQueryExample26
+    :end-before: DOCEND VaultQueryExample26
+    :dedent: 8
+
 **FungibleAsset and DealState queries using** ``FungibleAssetQueryCriteria``:
 
 Query for fungible assets for a given currency:
@@ -389,6 +406,14 @@ Query for fungible assets for a specific issuer party:
     :language: kotlin
     :start-after: DOCSTART VaultQueryExample14
     :end-before: DOCEND VaultQueryExample14
+    :dedent: 12
+
+Query for only relevant fungible states in the vault:
+
+.. literalinclude:: ../../node/src/test/kotlin/net/corda/node/services/vault/VaultQueryTests.kt
+    :language: kotlin
+    :start-after: DOCSTART VaultQueryExample27
+    :end-before: DOCEND VaultQueryExample27
     :dedent: 12
 
 **Aggregate Function queries using** ``VaultCustomQueryCriteria``:

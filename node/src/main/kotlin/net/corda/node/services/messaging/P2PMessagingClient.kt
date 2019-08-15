@@ -28,6 +28,7 @@ import net.corda.node.services.statemachine.DeduplicationId
 import net.corda.node.services.statemachine.ExternalEvent
 import net.corda.node.services.statemachine.SenderDeduplicationId
 import net.corda.node.utilities.AffinityExecutor
+import net.corda.node.utilities.errorAndTerminate
 import net.corda.nodeapi.internal.ArtemisMessagingComponent
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.*
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.BRIDGE_CONTROL
@@ -56,6 +57,7 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import javax.annotation.concurrent.ThreadSafe
+import kotlin.concurrent.timer
 
 /**
  * This class implements the [MessagingService] API using Apache Artemis, the successor to their ActiveMQ product.
@@ -108,6 +110,8 @@ class P2PMessagingClient(val config: NodeConfiguration,
         var eventsSubscription: Subscription? = null
         var p2pConsumer: P2PMessagingConsumer? = null
         var locator: ServerLocator? = null
+        var executorProducer: ClientProducer? = null
+        var executorSession: ClientSession? = null
         var producer: ClientProducer? = null
         var producerSession: ClientSession? = null
         var bridgeSession: ClientSession? = null
@@ -133,6 +137,7 @@ class P2PMessagingClient(val config: NodeConfiguration,
     private val delayStartQueues = Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
 
     private val handlers = ConcurrentHashMap<String, MessageHandler>()
+    private val handlersChangedSignal = java.lang.Object()
 
     private val deduplicator = P2PMessageDeduplicator(cacheFactory, database)
     internal var messagingExecutor: MessagingExecutor? = null
@@ -163,15 +168,17 @@ class P2PMessagingClient(val config: NodeConfiguration,
                 minLargeMessageSize = maxMessageSize + JOURNAL_HEADER_SIZE
                 isUseGlobalPools = nodeSerializationEnv != null
             }
-            val sessionFactory = locator!!.createSessionFactory()
+            val sessionFactory = locator!!.createSessionFactory().addFailoverListener(::failoverCallback)
             // Login using the node username. The broker will authenticate us as its node (as opposed to another peer)
             // using our TLS certificate.
             // Note that the acknowledgement of messages is not flushed to the Artermis journal until the default buffer
             // size of 1MB is acknowledged.
             val createNewSession = { sessionFactory!!.createSession(ArtemisMessagingComponent.NODE_P2P_USER, ArtemisMessagingComponent.NODE_P2P_USER, false, true, true, false, ActiveMQClient.DEFAULT_ACK_BATCH_SIZE) }
 
+            executorSession = createNewSession()
             producerSession = createNewSession()
             bridgeSession = createNewSession()
+            executorSession!!.start()
             producerSession!!.start()
             bridgeSession!!.start()
 
@@ -179,6 +186,7 @@ class P2PMessagingClient(val config: NodeConfiguration,
             // Create a queue, consumer and producer for handling P2P network messages.
             // Create a general purpose producer.
             producer = producerSession!!.createProducer()
+            executorProducer = executorSession!!.createProducer()
 
             inboxes += RemoteInboxAddress(myIdentity).queueName
             serviceIdentity?.let {
@@ -187,11 +195,11 @@ class P2PMessagingClient(val config: NodeConfiguration,
 
             inboxes.forEach { createQueueIfAbsent(it, producerSession!!, exclusive = true) }
 
-            p2pConsumer = P2PMessagingConsumer(inboxes, createNewSession, isDrainingModeOn, drainingModeWasChangedEvents)
+            p2pConsumer = P2PMessagingConsumer(inboxes, createNewSession, isDrainingModeOn, drainingModeWasChangedEvents, metricRegistry)
 
             messagingExecutor = MessagingExecutor(
-                    producerSession!!,
-                    producer!!,
+                    executorSession!!,
+                    executorProducer!!,
                     versionInfo,
                     this@P2PMessagingClient,
                     ourSenderUUID = ourSenderUUID
@@ -199,6 +207,22 @@ class P2PMessagingClient(val config: NodeConfiguration,
 
             registerBridgeControl(bridgeSession!!, inboxes.toList())
             enumerateBridges(bridgeSession!!, inboxes.toList())
+        }
+    }
+
+    private fun failoverCallback(event: FailoverEventType) {
+        when (event) {
+            FailoverEventType.FAILURE_DETECTED -> {
+                errorAndTerminate("Connection to the broker was lost. Node is shutting down.", null)
+            }
+            FailoverEventType.FAILOVER_FAILED -> state.locked {
+                if (running) {
+                    errorAndTerminate("Could not reconnect to the broker. Node is shutting down.", null)
+                }
+            }
+            else -> {
+                log.warn("Cannot handle event $event.")
+            }
         }
     }
 
@@ -306,6 +330,11 @@ class P2PMessagingClient(val config: NodeConfiguration,
     fun run() {
         val latch = CountDownLatch(1)
         try {
+            synchronized(handlersChangedSignal) {
+                while (handlers.isEmpty() && state.locked { (p2pConsumer != null) }) {
+                    handlersChangedSignal.wait()
+                }
+            }
             val consumer = state.locked {
                 check(started) { "start must be called first" }
                 check(!running) { "run can't be called twice" }
@@ -435,11 +464,18 @@ class P2PMessagingClient(val config: NodeConfiguration,
             producer = null
             producerSession!!.commit()
 
+            close(executorProducer)
+            executorProducer = null
+            executorSession!!.commit()
+
             close(bridgeNotifyConsumer)
             knownQueues.clear()
             eventsSubscription?.unsubscribe()
             eventsSubscription = null
             prevRunning
+        }
+        synchronized(handlersChangedSignal) {
+            handlersChangedSignal.notifyAll()
         }
         if (running && !nodeExecutor.isOnThread) {
             // Wait for the main loop to notice the consumer has gone and finish up.
@@ -528,6 +564,9 @@ class P2PMessagingClient(val config: NodeConfiguration,
             }
             callback
         }
+        synchronized(handlersChangedSignal) {
+            handlersChangedSignal.notifyAll()
+        }
         return HandlerRegistration(topic, callback)
     }
 
@@ -552,10 +591,12 @@ private class P2PMessagingConsumer(
         queueNames: Set<String>,
         createSession: () -> ClientSession,
         private val isDrainingModeOn: () -> Boolean,
-        private val drainingModeWasChangedEvents: Observable<Pair<Boolean, Boolean>>) : LifecycleSupport {
+        private val drainingModeWasChangedEvents: Observable<Pair<Boolean, Boolean>>,
+        private val metricsRegistry : MetricRegistry) : LifecycleSupport {
 
     private companion object {
         private const val initialSessionMessages = "${P2PMessagingHeaders.Type.KEY}<>'${P2PMessagingHeaders.Type.SESSION_INIT_VALUE}'"
+        private val logger by lazy { loggerFor<P2PMessagingClient>() }
     }
 
     private var startedFlag = false
@@ -566,16 +607,30 @@ private class P2PMessagingConsumer(
     private val initialAndExistingConsumer = multiplex(queueNames, createSession)
     private val subscriptions = mutableSetOf<Subscription>()
 
+    private var notificationTimer : Timer? = null
+    private fun scheduleDrainNotificationTimer() {
+        notificationTimer =  timer("DrainNotificationTimer", true, 10.seconds.toMillis(), 1.minutes.toMillis()) {
+            logger.warn("Node is currently in draining mode, new flows will not be processed! Flows in flight: ${metricsRegistry.gauges["Flows.InFlight"]?.value}")
+        }
+    }
+
     override fun start() {
 
         synchronized(this) {
             require(!startedFlag){"Must not already be started"}
-            drainingModeWasChangedEvents.filter { change -> change.switchedOn() }.doOnNext { initialAndExistingConsumer.switchTo(existingOnlyConsumer) }.subscribe()
-            drainingModeWasChangedEvents.filter { change -> change.switchedOff() }.doOnNext { existingOnlyConsumer.switchTo(initialAndExistingConsumer) }.subscribe()
+            drainingModeWasChangedEvents.filter { change -> change.switchedOn() }.doOnNext {
+                initialAndExistingConsumer.switchTo(existingOnlyConsumer)
+                scheduleDrainNotificationTimer()
+            }.subscribe()
+            drainingModeWasChangedEvents.filter { change -> change.switchedOff() }.doOnNext {
+                existingOnlyConsumer.switchTo(initialAndExistingConsumer)
+                notificationTimer?.cancel()
+            }.subscribe()
             subscriptions += existingOnlyConsumer.messages.doOnNext(messages::onNext).subscribe()
             subscriptions += initialAndExistingConsumer.messages.doOnNext(messages::onNext).subscribe()
             if (isDrainingModeOn()) {
                 existingOnlyConsumer.start()
+                scheduleDrainNotificationTimer()
             } else {
                 initialAndExistingConsumer.start()
             }

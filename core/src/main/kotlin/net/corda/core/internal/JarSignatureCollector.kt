@@ -20,7 +20,12 @@ object JarSignatureCollector {
     private val unsignableEntryName = "META-INF/(?:(?:.*[.](?:SF|DSA|RSA|EC)|SIG-.*)|INDEX\\.LIST)".toRegex()
 
     /**
-     * Returns an ordered list of every [Party] which has signed every signable item in the given [JarInputStream].
+     * @return if the [entry] [JarEntry] can be signed.
+     */
+    fun isNotSignable(entry: JarEntry): Boolean = entry.isDirectory || unsignableEntryName.matches(entry.name)
+
+    /**
+     * Returns an ordered list of every [PublicKey] which has signed every signable item in the given [JarInputStream].
      *
      * @param jar The open [JarInputStream] to collect signing parties from.
      * @throws InvalidJarSignersException If the signer sets for any two signable items are different from each other.
@@ -47,7 +52,7 @@ object JarSignatureCollector {
                     """
                     Mismatch between signers ${firstSignerSet.toOrderedPublicKeys()} for file $firstFile
                     and signers ${otherSignerSet.toOrderedPublicKeys()} for file ${otherFile}.
-                    See https://docs.corda.net/design/data-model-upgrades/signature-constraints.html for details of the
+                    See https://docs.corda.net/api-contract-constraints.html#signature-constraints for details of the
                     constraints applied to attachment signatures.
                     """.trimIndent().replace('\n', ' '))
         }
@@ -57,8 +62,7 @@ object JarSignatureCollector {
     private val JarInputStream.fileSignerSets: List<Pair<String, Set<CodeSigner>>> get() =
             entries.thatAreSignable.shreddedFrom(this).toFileSignerSet().toList()
 
-    private val Sequence<JarEntry>.thatAreSignable: Sequence<JarEntry> get() =
-            filterNot { entry -> entry.isDirectory || unsignableEntryName.matches(entry.name) }
+    private val Sequence<JarEntry>.thatAreSignable: Sequence<JarEntry> get() = filterNot { isNotSignable(it) }
 
     private fun Sequence<JarEntry>.shreddedFrom(jar: JarInputStream): Sequence<JarEntry> = map { entry ->
         val shredder = ByteArray(1024) // can't share or re-use this, as it's used to compute CRCs during shredding

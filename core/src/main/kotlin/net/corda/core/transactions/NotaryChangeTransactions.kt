@@ -78,8 +78,8 @@ data class NotaryChangeWireTransaction(
     @DeleteForDJVM
     fun resolve(services: ServicesForResolution, sigs: List<TransactionSignature>): NotaryChangeLedgerTransaction {
         val resolvedInputs = services.loadStates(inputs.toSet()).toList()
-        val hashToResolve = networkParametersHash ?: services.networkParametersStorage.defaultHash
-        val resolvedNetworkParameters = services.networkParametersStorage.lookup(hashToResolve)
+        val hashToResolve = networkParametersHash ?: services.networkParametersService.defaultHash
+        val resolvedNetworkParameters = services.networkParametersService.lookup(hashToResolve)
                 ?: throw TransactionResolutionException(id)
         return NotaryChangeLedgerTransaction.create(resolvedInputs, notary, newNotary, id, sigs, resolvedNetworkParameters)
     }
@@ -98,7 +98,7 @@ data class NotaryChangeWireTransaction(
      * TODO - currently this uses the main classloader.
      */
     @CordaInternal
-    internal fun resolveOutputComponent(services: ServicesForResolution, stateRef: StateRef): SerializedBytes<TransactionState<ContractState>> {
+    internal fun resolveOutputComponent(services: ServicesForResolution, stateRef: StateRef, params: NetworkParameters): SerializedBytes<TransactionState<ContractState>> {
         return services.loadState(stateRef).serialize()
     }
 

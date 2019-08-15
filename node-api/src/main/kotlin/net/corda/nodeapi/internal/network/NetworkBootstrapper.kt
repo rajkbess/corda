@@ -3,6 +3,7 @@ package net.corda.nodeapi.internal.network
 import com.typesafe.config.Config
 import com.typesafe.config.ConfigException
 import com.typesafe.config.ConfigFactory
+import net.corda.common.configuration.parsing.internal.Configuration
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.internal.*
@@ -29,7 +30,7 @@ import net.corda.serialization.internal.SerializationFactoryImpl
 import net.corda.serialization.internal.amqp.AbstractAMQPSerializationScheme
 import net.corda.serialization.internal.amqp.amqpMagic
 import java.io.File
-import java.io.InputStream
+import java.net.URL
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
@@ -53,14 +54,14 @@ import kotlin.streams.toList
 class NetworkBootstrapper
 @VisibleForTesting
 internal constructor(private val initSerEnv: Boolean,
-                     private val embeddedCordaJar: () -> InputStream,
+                     private val embeddedCordaJar: () -> URL,
                      private val nodeInfosGenerator: (List<Path>) -> List<Path>,
                      private val contractsJarConverter: (Path) -> ContractsJar) : NetworkBootstrapperWithOverridableParameters {
 
     constructor() : this(
             initSerEnv = true,
-            embeddedCordaJar = Companion::extractEmbeddedCordaJar,
-            nodeInfosGenerator = Companion::generateNodeInfos,
+            embeddedCordaJar = ::extractEmbeddedCordaJar,
+            nodeInfosGenerator = ::generateNodeInfos,
             contractsJarConverter = ::ContractsJarFile
     )
 
@@ -77,8 +78,8 @@ internal constructor(private val initSerEnv: Boolean,
 
         private val jarsThatArentCordapps = setOf("corda.jar", "runnodes.jar")
 
-        private fun extractEmbeddedCordaJar(): InputStream {
-            return Thread.currentThread().contextClassLoader.getResourceAsStream("corda.jar")
+        private fun extractEmbeddedCordaJar(): URL {
+            return Thread.currentThread().contextClassLoader.getResource("corda.jar")
         }
 
         private fun generateNodeInfos(nodeDirs: List<Path>): List<Path> {
@@ -106,13 +107,19 @@ internal constructor(private val initSerEnv: Boolean,
                     .redirectOutput(nodeInfoGenFile)
                     .apply { environment()["CAPSULE_CACHE_DIR"] = "../.cache" }
                     .start()
-            if (!process.waitFor(3, TimeUnit.MINUTES)) {
+            try {
+                if (!process.waitFor(3, TimeUnit.MINUTES)) {
+                    process.destroyForcibly()
+                    printNodeInfoGenLogToConsole(nodeInfoGenFile)
+                }
+                printNodeInfoGenLogToConsole(nodeInfoGenFile) { process.exitValue() == 0 }
+                return nodeDir.list { paths ->
+                    paths.filter { it.fileName.toString().startsWith(NODE_INFO_FILE_NAME_PREFIX) }.findFirst().get()
+                }
+            } catch (e: InterruptedException) {
+                // Don't leave this process dangling if the thread is interrupted.
                 process.destroyForcibly()
-                printNodeInfoGenLogToConsole(nodeInfoGenFile)
-            }
-            printNodeInfoGenLogToConsole(nodeInfoGenFile) { process.exitValue() == 0 }
-            return nodeDir.list { paths ->
-                paths.filter { it.fileName.toString().startsWith(NODE_INFO_FILE_NAME_PREFIX) }.findFirst().get()
+                throw e
             }
         }
 
@@ -163,7 +170,7 @@ internal constructor(private val initSerEnv: Boolean,
     private fun isBFTNotary(config: Config): Boolean {
         // TODO: pass a commandline parameter to the bootstrapper instead. Better yet, a notary config map
         //       specifying the notary identities and the type (single-node, CFT, BFT) of each notary to set up.
-        return config.getString("notary.className").contains("BFT", true)
+        return config.hasPath("notary.bftSMaRt")
     }
 
     private fun generateServiceIdentitiesForNotaryClusters(configs: Map<Path, Config>) {
@@ -190,6 +197,23 @@ internal constructor(private val initSerEnv: Boolean,
     /** Entry point for Cordform */
     fun bootstrapCordform(directory: Path, cordappJars: List<Path>) {
         bootstrap(directory, cordappJars, CopyCordapps.No, fromCordform = true)
+    }
+
+    /**
+     * Entry point for Cordform with extra configurations
+     * @param directory - directory on which the network will be deployed
+     * @param cordappJars - List of CordApps to deploy
+     * @param extraConfigurations - HOCON representation of extra configuration parameters
+     */
+    fun bootstrapCordform(directory: Path, cordappJars: List<Path>, extraConfigurations: String) {
+        val configuration = ConfigFactory.parseString(extraConfigurations).resolve().getObject("networkParameterOverrides").toConfig().parseAsNetworkParametersConfiguration()
+        val networkParametersOverrides = configuration.doOnErrors(::reportErrors).optional ?: throw IllegalStateException("Invalid configuration passed.")
+        bootstrap(directory, cordappJars, CopyCordapps.No, fromCordform = true, networkParametersOverrides = networkParametersOverrides)
+    }
+
+    private fun reportErrors(errors: Set<Configuration.Validation.Error>) {
+        System.err.println("Error(s) found parsing the networkParameterOverrides:")
+        errors.forEach { System.err.println("Error parsing ${it.pathAsString}: ${it.message}") }
     }
 
     /** Entry point for the tool */
@@ -241,8 +265,10 @@ internal constructor(private val initSerEnv: Boolean,
             println("Gathering notary identities")
             val notaryInfos = gatherNotaryInfos(nodeInfoFiles, configs)
             println("Generating contract implementations whitelist")
-            // Only add contracts to the whitelist from unsigned jars
-            val newWhitelist = generateWhitelist(existingNetParams, readExcludeWhitelist(directory), cordappJars.filter { !isSigned(it) }.map(contractsJarConverter))
+            val signedJars = cordappJars.filter { isSigned(it) } // signed JARs are excluded by default, optionally include them in order to transition states from CZ whitelist to signature constraint
+            val unsignedJars = cordappJars - signedJars
+            val newWhitelist = generateWhitelist(existingNetParams, readExcludeWhitelist(directory), unsignedJars.map(contractsJarConverter),
+                    readIncludeWhitelist(directory), signedJars.map(contractsJarConverter))
             val newNetParams = installNetworkParameters(notaryInfos, newWhitelist, existingNetParams, nodeDirs, networkParametersOverrides)
             if (newNetParams != existingNetParams) {
                 println("${if (existingNetParams == null) "New" else "Updated"} $newNetParams")
@@ -257,19 +283,23 @@ internal constructor(private val initSerEnv: Boolean,
         }
     }
 
+    private fun Path.listEndingWith(suffix: String): List<Path> {
+        return list { file -> file.filter { it.toString().endsWith(suffix) }.toList() }
+    }
+
     private fun createNodeDirectoriesIfNeeded(directory: Path, fromCordform: Boolean): Boolean {
         var networkAlreadyExists = false
         val cordaJar = directory / "corda.jar"
         var usingEmbedded = false
         if (!cordaJar.exists()) {
-            embeddedCordaJar().use { it.copyTo(cordaJar) }
+            embeddedCordaJar().openStream().use { it.copyTo(cordaJar) }
             usingEmbedded = true
         } else if (!fromCordform) {
             println("Using corda.jar in root directory")
         }
 
-        val confFiles = directory.list { it.filter { it.toString().endsWith("_node.conf") }.toList() }
-        val webServerConfFiles = directory.list { it.filter { it.toString().endsWith("_web-server.conf") }.toList() }
+        val confFiles = directory.listEndingWith("_node.conf")
+        val webServerConfFiles = directory.listEndingWith("_web-server.conf")
 
         for (confFile in confFiles) {
             val nodeName = confFile.fileName.toString().removeSuffix("_node.conf")
@@ -285,11 +315,10 @@ internal constructor(private val initSerEnv: Boolean,
             cordaJar.copyToDirectory(nodeDir, REPLACE_EXISTING)
         }
 
-        directory.list { paths ->
-            paths.filter { (it / "node.conf").exists() && !(it / "corda.jar").exists() }.forEach {
-                println("Copying corda.jar into node directory ${it.fileName}")
-                cordaJar.copyToDirectory(it)
-            }
+        val nodeDirs = directory.list { subDir -> subDir.filter { (it / "node.conf").exists() && !(it / "corda.jar").exists() }.toList() }
+        for (nodeDir in nodeDirs) {
+            println("Copying corda.jar into node directory ${nodeDir.fileName}")
+            cordaJar.copyToDirectory(nodeDir)
         }
 
         if (fromCordform) {
@@ -304,15 +333,11 @@ internal constructor(private val initSerEnv: Boolean,
     }
 
     private fun gatherNodeDirectories(directory: Path): List<Path> {
-        return directory.list { paths ->
-            paths.filter {
-                val exists = (it / "corda.jar").exists()
-                if (exists) {
-                    require((it / "node.conf").exists()) { "Missing node.conf in node directory ${it.fileName}" }
-                }
-                exists
-            }.toList()
+        val nodeDirs = directory.list { subDir -> subDir.filter { (it / "corda.jar").exists() }.toList() }
+        for (nodeDir in nodeDirs) {
+            require((nodeDir / "node.conf").exists()) { "Missing node.conf in node directory ${nodeDir.fileName}" }
         }
+        return nodeDirs
     }
 
     private fun distributeNodeInfos(nodeDirs: List<Path>, nodeInfoFiles: List<Path>) {
@@ -434,13 +459,13 @@ internal constructor(private val initSerEnv: Boolean,
     private fun initialiseSerialization() {
         _contextSerializationEnv.set(SerializationEnvironment.with(
                 SerializationFactoryImpl().apply {
-                    registerScheme(AMQPParametersSerializationScheme)
+                    registerScheme(AMQPParametersSerializationScheme())
                 },
                 AMQP_P2P_CONTEXT)
         )
     }
 
-    private object AMQPParametersSerializationScheme : AbstractAMQPSerializationScheme(emptyList()) {
+    private class AMQPParametersSerializationScheme : AbstractAMQPSerializationScheme(emptyList()) {
         override fun rpcClientSerializerFactory(context: SerializationContext) = throw UnsupportedOperationException()
         override fun rpcServerSerializerFactory(context: SerializationContext) = throw UnsupportedOperationException()
 
@@ -526,7 +551,7 @@ enum class CopyCordapps {
 
     fun copy(cordappJars: List<Path>, nodeDirs: List<Path>, networkAlreadyExists: Boolean, fromCordform: Boolean) {
         if (!fromCordform) {
-            println("Found the following CorDapps: ${cordappJars.map { it.fileName }}")
+            println("Found the following CorDapps: ${cordappJars.map(Path::getFileName)}")
         }
         this.copyTo(cordappJars, nodeDirs, networkAlreadyExists, fromCordform)
     }

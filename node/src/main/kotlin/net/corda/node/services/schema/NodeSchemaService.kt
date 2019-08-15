@@ -19,6 +19,7 @@ import net.corda.node.services.messaging.P2PMessageDeduplicator
 import net.corda.node.services.persistence.DBCheckpointStorage
 import net.corda.node.services.persistence.DBTransactionStorage
 import net.corda.node.services.persistence.NodeAttachmentService
+import net.corda.node.services.persistence.PublicKeyHashToExternalId
 import net.corda.node.services.upgrade.ContractUpgradeServiceImpl
 import net.corda.node.services.vault.VaultSchemaV1
 
@@ -45,7 +46,7 @@ class NodeSchemaService(private val extraSchemas: Set<MappedSchema> = emptySet()
                     PersistentIdentityService.PersistentIdentityNames::class.java,
                     ContractUpgradeServiceImpl.DBContractUpgrade::class.java,
                     DBNetworkParametersStorage.PersistentNetworkParameters::class.java,
-                    PersistentKeyManagementService.PublicKeyHashToExternalId::class.java
+                    PublicKeyHashToExternalId::class.java
             )) {
         override val migrationResource = "node-core.changelog-master"
     }
@@ -60,7 +61,8 @@ class NodeSchemaService(private val extraSchemas: Set<MappedSchema> = emptySet()
     fun internalSchemas() = requiredSchemas.keys + extraSchemas.filter { schema -> // when mapped schemas from the finance module are present, they are considered as internal ones
         schema::class.qualifiedName == "net.corda.finance.schemas.CashSchemaV1" ||
                 schema::class.qualifiedName == "net.corda.finance.schemas.CommercialPaperSchemaV1" ||
-                schema::class.qualifiedName == "net.corda.node.services.transactions.NodeNotarySchemaV1"
+                schema::class.qualifiedName == "net.corda.node.services.transactions.NodeNotarySchemaV1" ||
+                schema::class.qualifiedName?.startsWith("net.corda.notary.") ?: false
     }
 
     override val schemaOptions: Map<MappedSchema, SchemaService.SchemaOptions> = requiredSchemas + extraSchemas.associateBy({ it }, { SchemaOptions() })
@@ -96,3 +98,5 @@ class NodeSchemaService(private val extraSchemas: Set<MappedSchema> = emptySet()
             schemaOptions.keys.map { schema -> crossReferencesToOtherMappedSchema(schema) }.flatMap { it.toList() }
 
 }
+
+

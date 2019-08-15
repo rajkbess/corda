@@ -12,12 +12,10 @@ CorDapps
    cordapp-build-systems
    building-against-master
    debugging-a-cordapp
-   upgrade-notes
+   versioning
    upgrading-cordapps
+   cordapp-constraint-migration
+   cordapp-upgradeability
    secure-coding-guidelines
    flow-overriding
-   corda-api
    flow-cookbook
-   cheat-sheet
-   vault
-   soft-locking

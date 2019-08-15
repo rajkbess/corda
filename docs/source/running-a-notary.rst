@@ -28,21 +28,21 @@ For a validating notary service specify:
 See :ref:`key_concepts_notaries_validation` for more details about validating versus non-validating notaries.
 
 For clients to be able to use the notary service, its identity must be added to the network parameters. This will be
-done automatically when creating the network, if using :doc:`network-bootstrapper`. See :doc:`setting-up-a-corda-network`
+done automatically when creating the network, if using :doc:`network-bootstrapper`. See :doc:`corda-networks-index`
 for more details.
 
 Crash fault-tolerant (experimental)
 ===================================
 
 Corda provides a prototype `Raft-based <http://atomix.io/>`_ highly available notary implementation. You can try it out on our
-`notary demo <https://github.com/corda/corda/tree/release-V3.1/samples/notary-demo>`_ page. Note that it has known limitations
+`notary demo <|os_branch|/samples/notary-demo>`_ page. Note that it has known limitations
 and is not recommended for production use.
 
 Byzantine fault-tolerant (experimental)
 =======================================
 
 A prototype BFT notary implementation based on `BFT-Smart <https://github.com/bft-smart/library>`_ is available. You can
-try it out on our `notary demo <https://github.com/corda/corda/tree/release-V3.1/samples/notary-demo>`_ page. Note that it
+try it out on our `notary demo <|os_branch|/samples/notary-demo>`_ page. Note that it
 is still experimental and there is active work ongoing for a production ready solution. Additionally, BFT-Smart requires Java
 serialization which is disabled by default in Corda due to security risks, and it will only work in dev mode where this can
 be customised.

@@ -1,6 +1,5 @@
 package net.corda.client.rpc
 
-import net.corda.client.rpc.internal.createCordaRPCClientWithSslAndClassLoader
 import net.corda.core.context.*
 import net.corda.core.contracts.FungibleAsset
 import net.corda.core.crypto.random63BitValue
@@ -11,15 +10,16 @@ import net.corda.core.internal.toPath
 import net.corda.core.messaging.*
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.OpaqueBytes
+import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.getOrThrow
 import net.corda.finance.DOLLARS
 import net.corda.finance.POUNDS
 import net.corda.finance.USD
 import net.corda.finance.contracts.asset.Cash
-import net.corda.finance.contracts.getCashBalance
-import net.corda.finance.contracts.getCashBalances
 import net.corda.finance.flows.CashIssueFlow
 import net.corda.finance.flows.CashPaymentFlow
+import net.corda.finance.workflows.getCashBalance
+import net.corda.finance.workflows.getCashBalances
 import net.corda.node.internal.NodeWithInfo
 import net.corda.node.services.Permissions.Companion.all
 import net.corda.testing.common.internal.checkNotOnClasspath
@@ -48,6 +48,7 @@ import kotlin.test.assertTrue
 class CordaRPCClientTest : NodeBasedTest(listOf("net.corda.finance"), notaries = listOf(DUMMY_NOTARY_NAME)) {
     companion object {
         val rpcUser = User("user1", "test", permissions = setOf(all()))
+        val log = contextLogger()
     }
 
     private lateinit var node: NodeWithInfo
@@ -98,13 +99,13 @@ class CordaRPCClientTest : NodeBasedTest(listOf("net.corda.finance"), notaries =
         val nodeIsShut: PublishSubject<Unit> = PublishSubject.create()
         val latch = CountDownLatch(1)
         var successful = false
-        val maxCount = 20
+        val maxCount = 120
         var count = 0
         CloseableExecutor(Executors.newSingleThreadScheduledExecutor()).use { scheduler ->
 
             val task = scheduler.scheduleAtFixedRate({
                 try {
-                    println("Checking whether node is still running...")
+                    log.info("Checking whether node is still running...")
                     client.start(rpcUser.username, rpcUser.password).use {
                         println("... node is still running.")
                         if (count == maxCount) {
@@ -113,7 +114,7 @@ class CordaRPCClientTest : NodeBasedTest(listOf("net.corda.finance"), notaries =
                         count++
                     }
                 } catch (e: RPCException) {
-                    println("... node is not running.")
+                    log.info("... node is not running.")
                     nodeIsShut.onCompleted()
                 } catch (e: ActiveMQSecurityException) {
                     // nothing here - this happens if trying to connect before the node is started
@@ -123,7 +124,7 @@ class CordaRPCClientTest : NodeBasedTest(listOf("net.corda.finance"), notaries =
             }, 1, 1, TimeUnit.SECONDS)
 
             nodeIsShut.doOnError { error ->
-                error.printStackTrace()
+                log.error("FAILED TO SHUT DOWN NODE DUE TO", error)
                 successful = false
                 task.cancel(true)
                 latch.countDown()
@@ -269,7 +270,7 @@ class CordaRPCClientTest : NodeBasedTest(listOf("net.corda.finance"), notaries =
             val address = NetworkHostAndPort.parse(args[0])
             val financeClassLoader = URLClassLoader(arrayOf(Paths.get(args[1]).toUri().toURL()))
             val rpcUser = CordaRPCClientTest.rpcUser
-            val client = createCordaRPCClientWithSslAndClassLoader(address, classLoader = financeClassLoader)
+            val client = CordaRPCClient(address, classLoader = financeClassLoader)
             val state = client.use(rpcUser.username, rpcUser.password) {
                 // financeClassLoader should be allowing the Cash.State to materialise
                 @Suppress("DEPRECATION")

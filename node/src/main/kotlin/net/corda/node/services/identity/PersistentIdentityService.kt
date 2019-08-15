@@ -4,6 +4,7 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.identity.*
 import net.corda.core.internal.NamedCacheFactory
 import net.corda.core.internal.hash
+import net.corda.core.internal.toSet
 import net.corda.core.node.services.UnknownAnonymousPartyException
 import net.corda.core.serialization.SingletonSerializeAsToken
 import net.corda.core.utilities.MAX_HASH_HEX_SIZE
@@ -15,7 +16,7 @@ import net.corda.nodeapi.internal.crypto.X509CertificateFactory
 import net.corda.nodeapi.internal.crypto.x509Certificates
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.NODE_DATABASE_PREFIX
-import org.apache.commons.lang.ArrayUtils.EMPTY_BYTE_ARRAY
+import org.apache.commons.lang3.ArrayUtils.EMPTY_BYTE_ARRAY
 import java.security.InvalidAlgorithmParameterException
 import java.security.PublicKey
 import java.security.cert.*
@@ -24,6 +25,7 @@ import javax.persistence.Column
 import javax.persistence.Entity
 import javax.persistence.Id
 import javax.persistence.Lob
+import kotlin.streams.toList
 
 /**
  * An identity service that stores parties and their identities to a key value tables in the database. The entries are
@@ -101,16 +103,20 @@ class PersistentIdentityService(cacheFactory: NamedCacheFactory) : SingletonSeri
     private lateinit var _trustAnchor: TrustAnchor
     override val trustAnchor: TrustAnchor get() = _trustAnchor
 
+    /** Stores notary identities obtained from the network parameters, for which we don't need to perform a database lookup. */
+    private val notaryIdentityCache = HashSet<Party>()
+
     // CordaPersistence is not a c'tor parameter to work around the cyclic dependency
     lateinit var database: CordaPersistence
 
     private val keyToParties = createPKMap(cacheFactory)
     private val principalToParties = createX500Map(cacheFactory)
 
-    fun start(trustRoot: X509Certificate, caCertificates: List<X509Certificate> = emptyList()) {
+    fun start(trustRoot: X509Certificate, caCertificates: List<X509Certificate> = emptyList(), notaryIdentities: List<Party> = emptyList()) {
         _trustRoot = trustRoot
         _trustAnchor = TrustAnchor(trustRoot, null)
         _caCertStore = CertStore.getInstance("Collection", CollectionCertStoreParameters(caCertificates.toSet() + trustRoot))
+        notaryIdentityCache.addAll(notaryIdentities)
     }
 
     fun loadIdentities(identities: Collection<PartyAndCertificate> = emptySet(), confidentialIdentities: Collection<PartyAndCertificate> = emptySet()) {
@@ -120,7 +126,7 @@ class PersistentIdentityService(cacheFactory: NamedCacheFactory) : SingletonSeri
             principalToParties.addWithDuplicatesAllowed(it.name, key, false)
         }
         confidentialIdentities.forEach {
-            principalToParties.addWithDuplicatesAllowed(it.name, mapToKey(it), false)
+            keyToParties.addWithDuplicatesAllowed(mapToKey(it), it, false)
         }
         log.debug("Identities loaded")
     }
@@ -138,17 +144,18 @@ class PersistentIdentityService(cacheFactory: NamedCacheFactory) : SingletonSeri
     }
 
     override fun registerIdentity(identity: PartyAndCertificate, isNewRandomIdentity: Boolean): PartyAndCertificate? {
-        val identityCertChain = identity.certPath.x509Certificates
         log.debug { "Registering identity $identity" }
+        val identityCertChain = identity.certPath.x509Certificates
         val key = mapToKey(identity)
+
         if (isNewRandomIdentity) {
             // Because this is supposed to be new and random, there's no way we have it in the database already, so skip the pessimistic check.
             keyToParties[key] = identity
         } else {
             keyToParties.addWithDuplicatesAllowed(key, identity)
+            principalToParties.addWithDuplicatesAllowed(identity.name, key, false)
         }
-        // Always keep the first party we registered, as that's the well known identity
-        principalToParties.addWithDuplicatesAllowed(identity.name, key, false)
+
         val parentId = mapToKey(identityCertChain[1].publicKey)
         return keyToParties[parentId]
     }
@@ -165,21 +172,30 @@ class PersistentIdentityService(cacheFactory: NamedCacheFactory) : SingletonSeri
     }
 
     // We give the caller a copy of the data set to avoid any locking problems
-    override fun getAllIdentities(): Iterable<PartyAndCertificate> = database.transaction { keyToParties.allPersisted().map { it.second }.asIterable() }
+    override fun getAllIdentities(): Iterable<PartyAndCertificate> {
+        return database.transaction {
+            keyToParties.allPersisted.use { it.map { it.second }.toList() }
+        }
+    }
 
     override fun wellKnownPartyFromX500Name(name: CordaX500Name): Party? = certificateFromCordaX500Name(name)?.party
 
-    override fun wellKnownPartyFromAnonymous(party: AbstractParty): Party? = database.transaction { super.wellKnownPartyFromAnonymous(party) }
+    override fun wellKnownPartyFromAnonymous(party: AbstractParty): Party? {
+        // Skip database lookup if the party is a notary identity.
+        // This also prevents an issue where the notary identity can't be resolved if it's not in the network map cache. The node obtains
+        // a trusted list of notary identities from the network parameters automatically.
+        return if (party is Party && party in notaryIdentityCache) {
+            party
+        } else {
+            database.transaction { super.wellKnownPartyFromAnonymous(party) }
+        }
+    }
 
     override fun partiesFromName(query: String, exactMatch: Boolean): Set<Party> {
         return database.transaction {
-            val results = LinkedHashSet<Party>()
-            principalToParties.allPersisted().forEach { (x500name, partyId) ->
-                if (x500Matches(query, exactMatch, x500name)) {
-                    results += keyToParties[partyId]!!.party
-                }
+            principalToParties.allPersisted.use {
+                it.filter { x500Matches(query, exactMatch, it.first) }.map { keyToParties[it.second]!!.party }.toSet()
             }
-            results
         }
     }
 
@@ -188,12 +204,9 @@ class PersistentIdentityService(cacheFactory: NamedCacheFactory) : SingletonSeri
 
     lateinit var ourNames: Set<CordaX500Name>
 
-    // Allows us to cheaply eliminate keys we know belong to others by using the cache contents without triggering loading.
-    fun stripCachedPeerKeys(keys: Iterable<PublicKey>): Iterable<PublicKey> {
-        return keys.filter {
-            val party = keyToParties.getIfCached(mapToKey(it))?.party?.name
-            party == null || party in ourNames
-        }
+    // Allows us to eliminate keys we know belong to others by using the cache contents that might have been seen during other identity activity.
+    // Concentrating activity on the identity cache works better than spreading checking across identity and key management, because we cache misses too.
+    fun stripNotOurKeys(keys: Iterable<PublicKey>): Iterable<PublicKey> {
+        return keys.filter { certificateFromKey(it)?.name in ourNames }
     }
-
 }

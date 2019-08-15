@@ -7,10 +7,12 @@ import net.corda.core.crypto.componentHash
 import net.corda.core.crypto.sha256
 import net.corda.core.flows.FlowLogic
 import net.corda.core.identity.Party
+import net.corda.core.node.services.AttachmentStorage
+import net.corda.core.node.services.vault.AttachmentQueryCriteria
+import net.corda.core.node.services.vault.Builder
 import net.corda.core.serialization.*
 import net.corda.core.transactions.*
 import net.corda.core.utilities.OpaqueBytes
-import net.corda.core.utilities.lazyMapped
 import java.io.ByteArrayOutputStream
 import java.security.PublicKey
 import kotlin.reflect.KClass
@@ -71,7 +73,7 @@ fun <T : Any> deserialiseComponentGroup(componentGroups: List<ComponentGroup>,
     // If the componentGroup is a [LazyMappedList] it means that the original deserialized version is already available.
     val components = group.components
     if (!forceDeserialize && components is LazyMappedList<*, OpaqueBytes>) {
-        return components.originalList as List<T>
+        return uncheckedCast(components.originalList)
     }
 
     return components.lazyMapped { component, internalIndex ->
@@ -80,10 +82,16 @@ fun <T : Any> deserialiseComponentGroup(componentGroups: List<ComponentGroup>,
         } catch (e: MissingAttachmentsException) {
             throw e
         } catch (e: Exception) {
-            throw Exception("Malformed transaction, $groupEnum at index $internalIndex cannot be deserialised", e)
+            throw TransactionDeserialisationException(groupEnum, internalIndex, e)
         }
     }
 }
+
+/**
+ * Exception raised if an error was encountered while attempting to deserialise a component group in a transaction.
+ */
+class TransactionDeserialisationException(groupEnum: ComponentGroupEnum, index: Int, cause: Exception):
+        Exception("Failed to deserialise group $groupEnum at index $index in transaction: ${cause.message}", cause)
 
 /**
  * Method to deserialise Commands from its two groups:
@@ -167,7 +175,7 @@ fun FlowLogic<*>.checkParameterHash(networkParametersHash: SecureHash?) {
         if (serviceHub.networkParameters.minimumPlatformVersion < 4) return
         else throw IllegalArgumentException("Transaction for notarisation doesn't contain network parameters hash.")
     } else {
-        serviceHub.networkParametersStorage.lookup(networkParametersHash) ?: throw IllegalArgumentException("Transaction for notarisation contains unknown parameters hash: $networkParametersHash")
+        serviceHub.networkParametersService.lookup(networkParametersHash) ?: throw IllegalArgumentException("Transaction for notarisation contains unknown parameters hash: $networkParametersHash")
     }
 
     // TODO: [ENT-2666] Implement network parameters fuzzy checking. By design in Corda network we have propagation time delay.
@@ -175,3 +183,43 @@ fun FlowLogic<*>.checkParameterHash(networkParametersHash: SecureHash?) {
     //       lets us predict what is the reasonable time window for changing parameters on most of the nodes.
     //       For now we don't check whether the attached network parameters match the current ones.
 }
+
+// A cache for caching whether a particular set of signers are trusted
+private val trustedKeysCache: MutableMap<PublicKey, Boolean> =
+    createSimpleCache<PublicKey, Boolean>(100).toSynchronised()
+
+/**
+ * Establishes whether an attachment should be trusted. This logic is required in order to verify transactions, as transaction
+ * verification should only be carried out using trusted attachments.
+ *
+ * Attachments are trusted if one of the following is true:
+ *  - They are uploaded by a trusted uploader
+ *  - There is another attachment in the attachment store, that is trusted and is signed by at least one key that the input
+ *  attachment is also signed with
+ */
+fun isAttachmentTrusted(attachment: Attachment, service: AttachmentStorage?): Boolean {
+    val trustedByUploader = when (attachment) {
+        is ContractAttachment -> isUploaderTrusted(attachment.uploader)
+        is AbstractAttachment -> isUploaderTrusted(attachment.uploader)
+        else -> false
+    }
+
+    if (trustedByUploader) return true
+
+    return if (service != null && attachment.signerKeys.isNotEmpty()) {
+        attachment.signerKeys.any { signer ->
+            trustedKeysCache.computeIfAbsent(signer) {
+                val queryCriteria = AttachmentQueryCriteria.AttachmentsQueryCriteria(
+                    signersCondition = Builder.equal(listOf(signer)),
+                    uploaderCondition = Builder.`in`(TRUSTED_UPLOADERS)
+                )
+                service.queryAttachments(queryCriteria).isNotEmpty()
+            }
+        }
+    } else {
+        false
+    }
+}
+
+val SignedTransaction.dependencies: Set<SecureHash>
+    get() = (inputs.asSequence() + references.asSequence()).map { it.txhash }.toSet()

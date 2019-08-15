@@ -25,18 +25,39 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
+import static java.util.Collections.singletonList;
 import static kotlin.test.AssertionsKt.assertEquals;
 import static kotlin.test.AssertionsKt.fail;
-import static net.corda.finance.contracts.GetBalances.getCashBalance;
+import static net.corda.finance.workflows.GetBalances.getCashBalance;
 
 public class StandaloneCordaRPCJavaClientTest {
-    private List<String> perms = Collections.singletonList("ALL");
+
+    public static void copyCordapps(NodeProcess.Factory factory, NodeConfig notaryConfig) {
+        Path cordappsDir = (factory.baseDirectory(notaryConfig).resolve(NodeProcess.CORDAPPS_DIR_NAME));
+        try {
+            Files.createDirectories(cordappsDir);
+        } catch (IOException ex) {
+            fail("Failed to create directories");
+        }
+        try (Stream<Path> paths = Files.walk(Paths.get("build", "resources", "smokeTest"))) {
+            paths.filter(path -> path.toFile().getName().startsWith("cordapp")).forEach(file -> {
+                try {
+                    Files.copy(file, cordappsDir.resolve(file.getFileName()));
+                } catch (IOException ex) {
+                    fail("Failed to copy cordapp jar");
+                }
+            });
+        } catch (IOException e) {
+            fail("Failed to walk files");
+        }
+    }
+
+    private List<String> perms = singletonList("ALL");
     private Set<String> permSet = new HashSet<>(perms);
-    private User rpcUser = new User("user1", "test", permSet);
+    private User superUser = new User("superUser", "test", permSet);
 
     private AtomicInteger port = new AtomicInteger(15000);
 
-    private NodeProcess.Factory factory;
     private NodeProcess notary;
     private CordaRPCOps rpcProxy;
     private CordaRPCConnection connection;
@@ -48,16 +69,16 @@ public class StandaloneCordaRPCJavaClientTest {
             port.getAndIncrement(),
             port.getAndIncrement(),
             true,
-            Collections.singletonList(rpcUser),
+            singletonList(superUser),
             true
     );
 
     @Before
     public void setUp() {
-        factory = new NodeProcess.Factory();
-        copyFinanceCordapp();
+        NodeProcess.Factory factory = new NodeProcess.Factory();
+        copyCordapps(factory, notaryConfig);
         notary = factory.create(notaryConfig);
-        connection = notary.connect();
+        connection = notary.connect(superUser);
         rpcProxy = connection.getProxy();
         notaryNodeIdentity = rpcProxy.nodeInfo().getLegalIdentities().get(0);
     }
@@ -73,30 +94,8 @@ public class StandaloneCordaRPCJavaClientTest {
         }
     }
 
-    private void copyFinanceCordapp() {
-        Path cordappsDir = (factory.baseDirectory(notaryConfig).resolve(NodeProcess.CORDAPPS_DIR_NAME));
-        try {
-            Files.createDirectories(cordappsDir);
-        } catch (IOException ex) {
-            fail("Failed to create directories");
-        }
-        try (Stream<Path> paths = Files.walk(Paths.get("build", "resources", "smokeTest"))) {
-            paths.forEach(file -> {
-                if (file.toString().contains("corda-finance")) {
-                    try {
-                        Files.copy(file, cordappsDir.resolve(file.getFileName()));
-                    } catch (IOException ex) {
-                        fail("Failed to copy finance jar");
-                    }
-                }
-            });
-        } catch (IOException e) {
-            fail("Failed to walk files");
-        }
-    }
-
     @Test
-    public void testCashBalances() throws NoSuchFieldException, ExecutionException, InterruptedException {
+    public void testCashBalances() throws ExecutionException, InterruptedException {
         Amount<Currency> dollars123 = new Amount<>(123, Currency.getInstance("USD"));
 
         FlowHandle<AbstractCashFlow.Result> flowHandle = rpcProxy.startFlowDynamic(CashIssueFlow.class,
@@ -106,7 +105,7 @@ public class StandaloneCordaRPCJavaClientTest {
         flowHandle.getReturnValue().get();
 
         Amount<Currency> balance = getCashBalance(rpcProxy, Currency.getInstance("USD"));
-        System.out.print("Balance: " + balance + "\n");
+        System.out.println("Balance: " + balance);
 
         assertEquals(dollars123, balance, "matching");
     }

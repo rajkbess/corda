@@ -14,10 +14,9 @@ interface ObjectSerializer : AMQPSerializer<Any> {
 
     companion object {
         fun make(typeInformation: LocalTypeInformation, factory: LocalSerializerFactory): ObjectSerializer {
-            if (typeInformation is LocalTypeInformation.NonComposable)
-                throw NotSerializableException(
-                        "Trying to build an object serializer for ${typeInformation.typeIdentifier.prettyPrint(false)}, " +
-                        "but it is not constructible from its public properties, and so requires a custom serialiser.")
+            if (typeInformation is LocalTypeInformation.NonComposable) {
+                throw NotSerializableException(nonComposableExceptionMessage(typeInformation, factory))
+            }
 
             val typeDescriptor = factory.createDescriptor(typeInformation)
             val typeNotation = TypeNotationGenerator.getTypeNotation(typeInformation, typeDescriptor)
@@ -30,6 +29,22 @@ interface ObjectSerializer : AMQPSerializer<Any> {
                     makeForAbstract(typeNotation, typeInformation, typeDescriptor, factory)
                 else -> throw NotSerializableException("Cannot build object serializer for $typeInformation")
             }
+        }
+
+        private fun nonComposableExceptionMessage(
+            typeInformation: LocalTypeInformation.NonComposable,
+            factory: LocalSerializerFactory
+        ): String {
+            val serializerInformation = factory.customSerializerNames.map { "Serializer: $it" }.let { serializers ->
+                when {
+                    serializers.isNotEmpty() -> "Registered custom serializers:\n    ${serializers.joinToString("\n    ")}"
+                    else -> "No custom serializers registered."
+                }
+            }
+            return "Unable to create an object serializer for type ${typeInformation.observedType}:\n" +
+                    "${typeInformation.reason}\n\n" +
+                    "${typeInformation.remedy}\n\n" +
+                    "$serializerInformation\n"
         }
 
         private fun makeForAbstract(typeNotation: CompositeType,
@@ -167,13 +182,21 @@ class EvolutionObjectSerializer(
         private val reader: ComposableObjectReader): ObjectSerializer {
 
     companion object {
-        fun make(localTypeInformation: LocalTypeInformation.Composable, remoteTypeInformation: RemoteTypeInformation.Composable, constructor: LocalConstructorInformation,
-                 properties: Map<String, LocalPropertyInformation>, classLoader: ClassLoader): EvolutionObjectSerializer {
+        fun make(localTypeInformation: LocalTypeInformation.Composable,
+                 remoteTypeInformation: RemoteTypeInformation.Composable, constructor: LocalConstructorInformation,
+                 properties: Map<String, LocalPropertyInformation>,
+                 classLoader: ClassLoader,
+                 mustPreserveData: Boolean): EvolutionObjectSerializer {
             val propertySerializers = makePropertySerializers(properties, remoteTypeInformation.properties, classLoader)
             val reader = ComposableObjectReader(
                     localTypeInformation.typeIdentifier,
                     propertySerializers,
-                    EvolutionObjectBuilder.makeProvider(localTypeInformation.typeIdentifier, constructor, properties, remoteTypeInformation.properties.keys.sorted()))
+                    EvolutionObjectBuilder.makeProvider(
+                            localTypeInformation.typeIdentifier,
+                            constructor,
+                            properties,
+                            remoteTypeInformation,
+                            mustPreserveData))
 
             return EvolutionObjectSerializer(
                     localTypeInformation.observedType,

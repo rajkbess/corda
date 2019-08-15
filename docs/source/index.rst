@@ -29,8 +29,21 @@ We look forward to seeing what you can do with Corda!
 .. _`download the PDF`: _static/corda-developer-site.pdf
 
 .. toctree::
+   :maxdepth: 1
+   :hidden:
+   :titlesonly:
+
+   release-notes
+   app-upgrade-notes
+   node-upgrade-notes
+   corda-api
+   cheat-sheet
+
+.. toctree::
    :caption: Development
    :maxdepth: 1
+   :hidden:
+   :titlesonly:
 
    quickstart-index.rst
    key-concepts.rst
@@ -46,16 +59,28 @@ We look forward to seeing what you can do with Corda!
 .. toctree::
    :caption: Operations
    :maxdepth: 2
+   :hidden:
+   :titlesonly:
 
    corda-nodes-index.rst
    corda-networks-index.rst
+   docker-image.rst
    azure-vm.rst
    aws-vm.rst
    loadtesting.rst
-   building-container-images.rst
    cli-application-shell-extensions.rst
 
 .. Documentation is not included in the pdf unless it is included in a toctree somewhere
+
+.. conditional-toctree::
+   :caption: Corda Network
+   :maxdepth: 2
+   :if_tag: htmlmode
+   :hidden:
+   :titlesonly:
+
+   corda-network/index.md
+   corda-network/UAT.md
 
 .. conditional-toctree::
    :caption: Contents
@@ -67,41 +92,13 @@ We look forward to seeing what you can do with Corda!
    changelog.rst
 
 .. conditional-toctree::
-   :caption: Design docs
-   :maxdepth: 2
-   :if_tag: htmlmode
-
-   design/design-review-process.md
-   design/certificate-hierarchies/design.md
-   design/failure-detection-master-election/design.md
-   design/float/design.md
-   design/hadr/design.md
-   design/kafka-notary/design.md
-   design/monitoring-management/design.md
-   design/sgx-integration/design.md
-   design/reference-states/design.md
-   design/sgx-infrastructure/design.md
-   design/threat-model/corda-threat-model.md
-   design/data-model-upgrades/signature-constraints.md
-   design/data-model-upgrades/package-namespace-ownership.md
-
-.. conditional-toctree::
    :caption: Participate
    :maxdepth: 2
    :if_tag: htmlmode
-   
+   :hidden:
+   :titlesonly:
+
    contributing-index.rst
-   corda-repo-layout.rst
    deterministic-modules.rst
-   release-notes
+   design/design-docs-index.rst
    changelog
-
-.. conditional-toctree::
-   :caption: Corda Network
-   :maxdepth: 2
-   :if_tag: htmlmode
-
-   corda-network/index.md
-   corda-network/governance-structure.md
-   corda-network/governance-guidelines.md
-   corda-network/joining-corda-network.md

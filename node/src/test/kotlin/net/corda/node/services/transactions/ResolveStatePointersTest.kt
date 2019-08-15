@@ -29,6 +29,7 @@ class ResolveStatePointersTest {
     private val cordapps = listOf("net.corda.testing.contracts")
     private lateinit var services: MockServices
 
+    @BelongsToContract(DummyContract::class)
     private data class Bar(
             override val participants: List<AbstractParty> = listOf(),
             val bar: Int = 0,
@@ -36,6 +37,7 @@ class ResolveStatePointersTest {
             override val linearId: UniqueIdentifier = UniqueIdentifier()
     ) : LinearState
 
+    @BelongsToContract(DummyContract::class)
     private data class Foo<T : LinearState>(val baz: LinearPointer<T>, override val participants: List<AbstractParty>) : ContractState
 
     private val barOne = Bar(listOf(myself.party), 1)
@@ -87,7 +89,7 @@ class ResolveStatePointersTest {
     @Test
     fun `resolving nested pointers is possible`() {
         // Create barOne.
-        createPointedToState(barOne)
+        val barOneStateAndRef = createPointedToState(barOne)
 
         // Create another Bar - barTwo - which points to barOne.
         val barTwoStateAndRef = createPointedToState(barTwo)
@@ -105,6 +107,7 @@ class ResolveStatePointersTest {
 
         // Check both Bar StateRefs have been added to the transaction.
         assertEquals(2, tx.referenceStates().size)
+        assertEquals(setOf(barOneStateAndRef.ref, barTwoStateAndRef.ref), tx.referenceStates().toSet())
     }
 
     @Test

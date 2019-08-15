@@ -1,11 +1,13 @@
 package net.corda.node.services.vault
 
+import com.nhaarman.mockito_kotlin.mock
 import net.corda.core.contracts.*
 import net.corda.core.crypto.*
 import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.internal.packageName
+import net.corda.core.node.StatesToRecord
 import net.corda.core.node.services.*
 import net.corda.core.node.services.Vault.ConstraintInfo.Type.*
 import net.corda.core.node.services.vault.*
@@ -17,13 +19,14 @@ import net.corda.finance.*
 import net.corda.finance.contracts.CommercialPaper
 import net.corda.finance.contracts.Commodity
 import net.corda.finance.contracts.DealState
+import net.corda.finance.workflows.asset.selection.AbstractCashSelection
 import net.corda.finance.contracts.asset.Cash
-import net.corda.finance.contracts.asset.cash.selection.AbstractCashSelection
 import net.corda.finance.schemas.CashSchemaV1
 import net.corda.finance.schemas.CashSchemaV1.PersistentCashState
 import net.corda.finance.schemas.CommercialPaperSchemaV1
-import net.corda.finance.schemas.test.SampleCashSchemaV2
-import net.corda.finance.schemas.test.SampleCashSchemaV3
+import net.corda.finance.test.SampleCashSchemaV2
+import net.corda.finance.test.SampleCashSchemaV3
+import net.corda.finance.workflows.CommercialPaperUtils
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
 import net.corda.nodeapi.internal.persistence.DatabaseTransaction
@@ -31,7 +34,6 @@ import net.corda.testing.core.*
 import net.corda.testing.internal.TEST_TX_TIME
 import net.corda.testing.internal.chooseIdentity
 import net.corda.testing.internal.configureDatabase
-import net.corda.testing.internal.rigorousMock
 import net.corda.testing.internal.vault.*
 import net.corda.testing.node.MockServices
 import net.corda.testing.node.MockServices.Companion.makeTestDatabaseAndMockServices
@@ -45,6 +47,7 @@ import org.junit.Test
 import org.junit.rules.ExpectedException
 import org.junit.rules.ExternalResource
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
@@ -141,7 +144,7 @@ open class VaultQueryTestRule : ExternalResource(), VaultQueryParties {
         services = databaseAndServices.second
         vaultFiller = VaultFiller(services, dummyNotary)
         vaultFillerCashNotary = VaultFiller(services, dummyNotary, CASH_NOTARY)
-        notaryServices = MockServices(cordappPackages, dummyNotary, rigorousMock(), dummyCashIssuer.keyPair, BOC_KEY, MEGA_CORP_KEY)
+        notaryServices = MockServices(cordappPackages, dummyNotary, mock(), dummyCashIssuer.keyPair, BOC_KEY, MEGA_CORP_KEY)
         identitySvc = services.identityService
         // Register all of the identities we're going to use
         (notaryServices.myInfo.legalIdentitiesAndCerts + BOC_IDENTITY + CASH_NOTARY_IDENTITY + MINI_CORP_IDENTITY + MEGA_CORP_IDENTITY).forEach { identity ->
@@ -823,10 +826,49 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
             assertThat(resultsUnlockedAndByLockIds.states).hasSize(5)
 
             // missing lockId
-            expectedEx.expect(IllegalArgumentException::class.java)
+            expectedEx.expect(VaultQueryException::class.java)
             expectedEx.expectMessage("Must specify one or more lockIds")
             val criteriaMissingLockId = VaultQueryCriteria(softLockingCondition = SoftLockingCondition(SoftLockingType.UNLOCKED_AND_SPECIFIED))
             vaultService.queryBy<ContractState>(criteriaMissingLockId)
+        }
+    }
+
+    @Test
+    fun `state relevancy queries`() {
+        database.transaction {
+            vaultFiller.fillWithSomeTestDeals(listOf("123", "456", "789"), includeMe = true)
+            vaultFiller.fillWithSomeTestDeals(listOf("ABC", "DEF", "GHI"), includeMe = false)
+            vaultFillerCashNotary.fillWithSomeTestCash(100.DOLLARS, notaryServices, 10, DUMMY_CASH_ISSUER, statesToRecord = StatesToRecord.ALL_VISIBLE)
+            vaultFillerCashNotary.fillWithSomeTestCash(100.DOLLARS, notaryServices, 10, DUMMY_CASH_ISSUER, charlie.party, statesToRecord = StatesToRecord.ALL_VISIBLE)
+            vaultFiller.fillWithSomeTestLinearStates(1, "XYZ", includeMe = true)
+            vaultFiller.fillWithSomeTestLinearStates(2, "JKL", includeMe = false)
+
+            val dealStates = vaultService.queryBy<DummyDealContract.State>().states
+            assertThat(dealStates).hasSize(6)
+
+            //DOCSTART VaultQueryExample25
+            val relevancyAllCriteria = VaultQueryCriteria(relevancyStatus = Vault.RelevancyStatus.RELEVANT)
+            val allDealStateCount = vaultService.queryBy<DummyDealContract.State>(relevancyAllCriteria).states
+            //DOCEND VaultQueryExample25
+            assertThat(allDealStateCount).hasSize(3)
+
+            val cashStates = vaultService.queryBy<Cash.State>().states
+            assertThat(cashStates).hasSize(20)
+
+            //DOCSTART VaultQueryExample27
+            val allCashCriteria = FungibleStateQueryCriteria(relevancyStatus = Vault.RelevancyStatus.RELEVANT)
+            val allCashStates = vaultService.queryBy<Cash.State>(allCashCriteria).states
+            //DOCEND VaultQueryExample27
+            assertThat(allCashStates).hasSize(10)
+
+            val linearStates = vaultService.queryBy<DummyLinearContract.State>().states
+            assertThat(linearStates).hasSize(3)
+
+            //DOCSTART VaultQueryExample26
+            val allLinearStateCriteria = LinearStateQueryCriteria(relevancyStatus = Vault.RelevancyStatus.RELEVANT)
+            val allLinearStates = vaultService.queryBy<DummyLinearContract.State>(allLinearStateCriteria).states
+            //DOCEND VaultQueryExample26
+            assertThat(allLinearStates).hasSize(1)
         }
     }
 
@@ -1500,7 +1542,7 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
         database.transaction {
             vaultFiller.fillWithSomeTestCash(100.DOLLARS, notaryServices, 100, DUMMY_CASH_ISSUER)
             @Suppress("EXPECTED_CONDITION")
-            val pagingSpec = PageSpecification(DEFAULT_PAGE_NUM, @Suppress("INTEGER_OVERFLOW") MAX_PAGE_SIZE + 1)  // overflow = -2147483648
+            val pagingSpec = PageSpecification(DEFAULT_PAGE_NUM, @Suppress("INTEGER_OVERFLOW") Integer.MAX_VALUE + 1)  // overflow = -2147483648
             val criteria = VaultQueryCriteria(status = Vault.StateStatus.ALL)
             vaultService.queryBy<ContractState>(criteria, paging = pagingSpec)
         }
@@ -1568,7 +1610,12 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
                 println("$index : $any")
             }
             assertThat(results.otherResults.size).isEqualTo(402)
-            assertThat(results.otherResults.last()).isEqualTo(200L)
+            val instants = results.otherResults.filter { it is Instant }.map { it as Instant }
+            assertThat(instants).isSorted
+            val longs = results.otherResults.filter { it is Long }.map { it as Long }
+            assertThat(longs.size).isEqualTo(201)
+            assertThat(instants.size).isEqualTo(201)
+            assertThat(longs.sum()).isEqualTo(20100L)
         }
     }
 
@@ -1907,15 +1954,15 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
     fun `unconsumed fungible assets for selected issuer parties`() {
         // GBP issuer
         val gbpCashIssuerName = CordaX500Name(organisation = "British Pounds Cash Issuer", locality = "London", country = "GB")
-        val gbpCashIssuerServices = MockServices(cordappPackages, gbpCashIssuerName, rigorousMock(), generateKeyPair())
+        val gbpCashIssuerServices = MockServices(cordappPackages, gbpCashIssuerName, mock(), generateKeyPair())
         val gbpCashIssuer = gbpCashIssuerServices.myInfo.singleIdentityAndCert()
         // USD issuer
         val usdCashIssuerName = CordaX500Name(organisation = "US Dollars Cash Issuer", locality = "New York", country = "US")
-        val usdCashIssuerServices = MockServices(cordappPackages, usdCashIssuerName, rigorousMock(), generateKeyPair())
+        val usdCashIssuerServices = MockServices(cordappPackages, usdCashIssuerName, mock(), generateKeyPair())
         val usdCashIssuer = usdCashIssuerServices.myInfo.singleIdentityAndCert()
         // CHF issuer
         val chfCashIssuerName = CordaX500Name(organisation = "Swiss Francs Cash Issuer", locality = "Zurich", country = "CH")
-        val chfCashIssuerServices = MockServices(cordappPackages, chfCashIssuerName, rigorousMock(), generateKeyPair())
+        val chfCashIssuerServices = MockServices(cordappPackages, chfCashIssuerName, mock(), generateKeyPair())
         val chfCashIssuer = chfCashIssuerServices.myInfo.singleIdentityAndCert()
         listOf(gbpCashIssuer, usdCashIssuer, chfCashIssuer).forEach { identity ->
             services.identityService.verifyAndRegisterIdentity(identity)
@@ -2077,7 +2124,7 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
             // MegaCorp™ issues $10,000 of commercial paper, to mature in 30 days, owned by itself.
             val faceValue = 10000.DOLLARS `issued by` DUMMY_CASH_ISSUER
             val commercialPaper =
-                    CommercialPaper().generateIssue(issuance, faceValue, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
+                    CommercialPaperUtils.generateIssue(issuance, faceValue, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
                         builder.setTimeWindow(TEST_TX_TIME, 30.seconds)
                         val stx = services.signInitialTransaction(builder, MEGA_CORP_PUBKEY)
                         notaryServices.addSignature(stx, DUMMY_NOTARY_KEY.public)
@@ -2088,7 +2135,7 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
             // MegaCorp™ now issues £10,000 of commercial paper, to mature in 30 days, owned by itself.
             val faceValue2 = 10000.POUNDS `issued by` DUMMY_CASH_ISSUER
             val commercialPaper2 =
-                    CommercialPaper().generateIssue(issuance, faceValue2, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
+                    CommercialPaperUtils.generateIssue(issuance, faceValue2, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
                         builder.setTimeWindow(TEST_TX_TIME, 30.seconds)
                         val stx = services.signInitialTransaction(builder, MEGA_CORP_PUBKEY)
                         notaryServices.addSignature(stx, DUMMY_NOTARY_KEY.public)
@@ -2114,7 +2161,7 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
             // MegaCorp™ issues $10,000 of commercial paper, to mature in 30 days, owned by itself.
             val faceValue = 10000.DOLLARS `issued by` DUMMY_CASH_ISSUER
             val commercialPaper =
-                    CommercialPaper().generateIssue(issuance, faceValue, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
+                    CommercialPaperUtils.generateIssue(issuance, faceValue, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
                         builder.setTimeWindow(TEST_TX_TIME, 30.seconds)
                         val stx = services.signInitialTransaction(builder, MEGA_CORP_PUBKEY)
                         notaryServices.addSignature(stx, DUMMY_NOTARY_KEY.public)
@@ -2125,7 +2172,7 @@ abstract class VaultQueryTestsBase : VaultQueryParties {
             // MegaCorp™ now issues £5,000 of commercial paper, to mature in 30 days, owned by itself.
             val faceValue2 = 5000.POUNDS `issued by` DUMMY_CASH_ISSUER
             val commercialPaper2 =
-                    CommercialPaper().generateIssue(issuance, faceValue2, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
+                    CommercialPaperUtils.generateIssue(issuance, faceValue2, TEST_TX_TIME + 30.days, DUMMY_NOTARY).let { builder ->
                         builder.setTimeWindow(TEST_TX_TIME, 30.seconds)
                         val stx = services.signInitialTransaction(builder, MEGA_CORP_PUBKEY)
                         notaryServices.addSignature(stx, DUMMY_NOTARY_KEY.public)

@@ -14,12 +14,14 @@ see changes to this list.
 * Ajitha Thayaharan (BCS Technology International)
 * Alberto Arri (R3)
 * amiracam
+* Amol Pednekar
 * Andras Slemmer (R3)
 * Andrius Dagys (R3)
 * Andrzej Cichocki (R3)
 * Andrzej Grzesik (R3)
 * Anthony Keenan (R3)
 * Anthony Woolley (Société Générale)
+* Anton Markov (Industria)
 * Anton Semenov (Commerzbank)
 * Antonio Cerrato (SEB)
 * Antony Lewis (R3)
@@ -61,6 +63,7 @@ see changes to this list.
 * Clinton Alexander (R3)
 * Clyde D'Cruz (Persistent Systems Limited)
 * cncorda
+* Craig Pastro
 * Credit Suisse
 * cyrsis
 * Dan Newton (Accenture)
@@ -77,6 +80,7 @@ see changes to this list.
 * Emanuel Russo (NTT DATA Italy)
 * Farzad Pezeshkpour (RBS)
 * fracting
+* Francisco Spadafora (NTT DATA Italy)
 * Frederic Dalibard (Natixis)
 * Garrett Macey (Wells Fargo)
 * gary-rowe
@@ -91,6 +95,7 @@ see changes to this list.
 * Igor Nitto (R3)
 * Igor Panov
 * Ivan Schasny (R3)
+* Ivaylo Tonev (Industria)
 * James Brown (R3)
 * James Carlyle (R3)
 * Janis Olekss (Accenture)
@@ -145,6 +150,7 @@ see changes to this list.
 * Milen Dobrinov (Industria)
 * Mohamed Amine LEGHERABA
 * Mustafa Ozturk (Natixis)
+* Manish Kumar (ChainThat)
 * Nick Skinner (Northern Trust)
 * Nigel King (R3)
 * Nitesh Solanki (Persistent Systems Limited)
@@ -156,6 +162,7 @@ see changes to this list.
 * Pekka Kaipio (OP Financial)
 * Phillip Griffin
 * Piotr Piskorski (Nordea)
+* Prannav Kotamraju (Digiledge)
 * Przemyslaw Bak (R3)
 * quiark
 * RangerOfFire
@@ -209,6 +216,7 @@ see changes to this list.
 * verymahler
 * Viktor Kolomeyko (R3)
 * Vipin Bharathan
+* Vitalij Reicherdt (Commerzbank AG)
 * Wawrzek Niewodniczanski (R3)
 * Wei Wu Zhang (Commonwealth Bank of Australia)
 * Zabrina Smith (Northern Trust)

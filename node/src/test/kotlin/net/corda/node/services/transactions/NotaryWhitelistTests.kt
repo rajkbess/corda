@@ -60,7 +60,7 @@ class NotaryWhitelistTests(
     @Before
     fun setup() {
         mockNet = InternalMockNetwork(
-                cordappsForAllNodes = cordappsForPackages("net.corda.testing.contracts"),
+                cordappsForAllNodes = listOf(DUMMY_CONTRACTS_CORDAPP),
                 notarySpecs = listOf(MockNetworkNotarySpec(oldNotaryName, validating = isValidating), MockNetworkNotarySpec(newNotaryName, validating = isValidating)),
                 initialNetworkParameters = testNetworkParameters(minimumPlatformVersion = 4)
         )
@@ -222,7 +222,7 @@ class NotaryWhitelistTests(
                 listOf(inputState.ref),
                 fakeNotaryParty,
                 oldNotary,
-                aliceNode.services.networkParametersStorage.currentHash
+                aliceNode.services.networkParametersService.currentHash
         ).build()
 
         val notaryChangeAliceSig = getAliceSig(notaryChangeTx)

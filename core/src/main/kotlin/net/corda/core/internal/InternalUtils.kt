@@ -11,6 +11,7 @@ import net.corda.core.serialization.deserialize
 import net.corda.core.serialization.serialize
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.UntrustworthyData
+import net.corda.core.utilities.seconds
 import org.slf4j.Logger
 import rx.Observable
 import rx.Observer
@@ -44,12 +45,15 @@ import java.util.*
 import java.util.Spliterator.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.stream.Collectors
+import java.util.stream.Collectors.toCollection
 import java.util.stream.IntStream
 import java.util.stream.Stream
 import java.util.stream.StreamSupport
 import java.util.zip.Deflater
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlin.collections.LinkedHashSet
 import kotlin.reflect.KClass
 import kotlin.reflect.full.createInstance
 
@@ -272,6 +276,9 @@ inline fun <T, R : Any> Stream<T>.mapNotNull(crossinline transform: (T) -> R?): 
     }
 }
 
+/** Similar to [Collectors.toSet] except the Set is guaranteed to be ordered. */
+fun <T> Stream<T>.toSet(): Set<T> = collect(toCollection { LinkedHashSet<T>() })
+
 fun <T> Class<T>.castIfPossible(obj: Any): T? = if (isInstance(obj)) cast(obj) else null
 
 /** Returns a [DeclaredField] wrapper around the declared (possibly non-public) static field of the receiver [Class]. */
@@ -387,7 +394,17 @@ val Class<*>.location: URL get() = protectionDomain.codeSource.location
 
 /** Convenience method to get the package name of a class literal. */
 val KClass<*>.packageName: String get() = java.packageName
-val Class<*>.packageName: String get() = `package`.name
+val Class<*>.packageName: String get() = requireNotNull(this.packageNameOrNull) { "$this not defined inside a package" }
+val Class<*>.packageNameOrNull: String? // This intentionally does not go via `package` as that code path is slow and contended and just ends up doing this.
+    get() {
+        val name = this.getName()
+        val i = name.lastIndexOf('.')
+        if (i != -1) {
+            return name.substring(0, i)
+        } else {
+            return null
+        }
+    }
 
 inline val Class<*>.isAbstractClass: Boolean get() = Modifier.isAbstract(modifiers)
 
@@ -403,8 +420,15 @@ inline val Member.isFinal: Boolean get() = Modifier.isFinal(modifiers)
 
 @DeleteForDJVM fun URL.toPath(): Path = toURI().toPath()
 
+val DEFAULT_HTTP_CONNECT_TIMEOUT = 30.seconds.toMillis()
+val DEFAULT_HTTP_READ_TIMEOUT = 30.seconds.toMillis()
+
 @DeleteForDJVM
-fun URL.openHttpConnection(): HttpURLConnection = openConnection() as HttpURLConnection
+fun URL.openHttpConnection(): HttpURLConnection = openConnection().also {
+    // The default values are 0 which means infinite timeout.
+    it.connectTimeout = DEFAULT_HTTP_CONNECT_TIMEOUT.toInt()
+    it.readTimeout = DEFAULT_HTTP_READ_TIMEOUT.toInt()
+} as HttpURLConnection
 
 @DeleteForDJVM
 fun URL.post(serializedData: OpaqueBytes, vararg properties: Pair<String, String>): ByteArray {
@@ -476,6 +500,13 @@ fun <T : Any> T.signWithCert(privateKey: PrivateKey, certificate: X509Certificat
 }
 
 @DeleteForDJVM
+fun <T : Any> T.signWithCertPath(privateKey: PrivateKey, certPath: List<X509Certificate>): SignedDataWithCert<T> {
+    return signWithCert {
+        val signature = Crypto.doSign(privateKey, it.bytes)
+        DigitalSignatureWithCert(certPath.first(), certPath.takeLast(certPath.size - 1), signature)
+    }
+}
+@DeleteForDJVM
 inline fun <T : Any> SerializedBytes<T>.sign(signer: (SerializedBytes<T>) -> DigitalSignature.WithKey): SignedData<T> {
     return SignedData(this, signer(this))
 }
@@ -516,15 +547,60 @@ fun <K, V> createSimpleCache(maxSize: Int, onEject: (MutableMap.MutableEntry<K, 
     }
 }
 
+/** @see Collections.synchronizedMap */
 fun <K, V> MutableMap<K, V>.toSynchronised(): MutableMap<K, V> = Collections.synchronizedMap(this)
+/** @see Collections.synchronizedSet */
+fun <E> MutableSet<E>.toSynchronised(): MutableSet<E> = Collections.synchronizedSet(this)
 
-private fun isPackageValid(packageName: String): Boolean = packageName.isNotEmpty() && !packageName.endsWith(".") && packageName.split(".").all { token ->
-    Character.isJavaIdentifierStart(token[0]) && token.toCharArray().drop(1).all { Character.isJavaIdentifierPart(it) }
+/**
+ * List implementation that applies the expensive [transform] function only when the element is accessed and caches calculated values.
+ * Size is very cheap as it doesn't call [transform].
+ * Used internally by [net.corda.core.transactions.TraversableTransaction].
+ */
+class LazyMappedList<T, U>(val originalList: List<T>, val transform: (T, Int) -> U) : AbstractList<U>() {
+    private val partialResolvedList = MutableList<U?>(originalList.size) { null }
+    override val size get() = originalList.size
+    override fun get(index: Int): U {
+        return partialResolvedList[index]
+                ?: transform(originalList[index], index).also { computed -> partialResolvedList[index] = computed }
+    }
+    internal fun eager(onError: (TransactionDeserialisationException, Int) -> U?) {
+        for (i in 0 until size) {
+            try {
+                get(i)
+            } catch (ex: TransactionDeserialisationException) {
+                partialResolvedList[i] = onError(ex, i)
+            }
+        }
+    }
 }
 
 /**
- * Check if a string is a legal Java package name.
+ * Returns a [List] implementation that applies the expensive [transform] function only when an element is accessed and then caches the calculated values.
+ * Size is very cheap as it doesn't call [transform].
  */
-fun requirePackageValid(name: String) {
-    require(isPackageValid(name)) { "Invalid Java package name: `$name`." }
+fun <T, U> List<T>.lazyMapped(transform: (T, Int) -> U): List<U> = LazyMappedList(this, transform)
+
+/**
+ * Iterate over a [LazyMappedList], forcing it to transform all of its elements immediately.
+ * This transformation is assumed to be "deserialisation". Does nothing for any other kind of [List].
+ * WARNING: Any changes made to the [LazyMappedList] contents are PERMANENT!
+ */
+fun <T> List<T>.eagerDeserialise(onError: (TransactionDeserialisationException, Int) -> T? = { ex, _ -> throw ex }) {
+    if (this is LazyMappedList<*, T>) {
+        eager(onError)
+    }
+}
+
+private const val MAX_SIZE = 100
+private val warnings = Collections.newSetFromMap(createSimpleCache<String, Boolean>(MAX_SIZE)).toSynchronised()
+
+/**
+ * Utility to help log a warning message only once.
+ * It implements an ad hoc Fifo cache because there's none available in the standard libraries.
+ */
+fun Logger.warnOnce(warning: String) {
+    if (warnings.add(warning)) {
+        this.warn(warning)
+    }
 }

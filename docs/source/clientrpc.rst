@@ -21,6 +21,8 @@ you.
    `CordaRPCClient`_ class. You can find an example of how to do this using the popular Spring Boot server
    `here <https://github.com/corda/spring-webserver>`_.
 
+.. _clientrpc_connect_ref:
+
 Connecting to a node via RPC
 ----------------------------
 To use `CordaRPCClient`_, you must add ``net.corda:corda-rpc:$corda_release_version`` as a ``cordaCompile`` dependency
@@ -68,7 +70,7 @@ RPC users are created by adding them to the ``rpcUsers`` list in the node's ``no
                 username=exampleUser
                 password=examplePass
                 permissions=[]
-            }
+            },
             ...
         ]
 
@@ -91,7 +93,7 @@ You provide an RPC user with the permission to start a specific flow using the s
                     "StartFlow.net.corda.flows.ExampleFlow1",
                     "StartFlow.net.corda.flows.ExampleFlow2"
                 ]
-            }
+            },
             ...
         ]
 
@@ -109,7 +111,7 @@ You can also provide an RPC user with the permission to start any flow using the
                 permissions=[
                     "InvokeRpc.startFlow"
                 ]
-            }
+            },
             ...
         ]
 
@@ -130,7 +132,7 @@ You provide an RPC user with the permission to perform a specific RPC operation 
                     "InvokeRpc.nodeInfo",
                     "InvokeRpc.networkMapSnapshot"
                 ]
-            }
+            },
             ...
         ]
 
@@ -150,7 +152,7 @@ You can provide an RPC user with the permission to perform any RPC operation (in
                 permissions=[
                     "ALL"
                 ]
-            }
+            },
             ...
         ]
 
@@ -180,8 +182,8 @@ passwords in hash-encrypted format and enable in-memory caching of users data:
         security = {
             authService = {
                 dataSource = {
-                    type = "DB",
-                    passwordEncryption = "SHIRO_1_CRYPT",
+                    type = "DB"
+                    passwordEncryption = "SHIRO_1_CRYPT"
                     connection = {
                        jdbcUrl = "<jdbc connection string>"
                        username = "<db username>"
@@ -208,11 +210,11 @@ of ``INMEMORY`` type:
         security = {
             authService = {
                 dataSource = {
-                    type = "INMEMORY",
+                    type = "INMEMORY"
                     users = [
                         {
-                            username = "<username>",
-                            password = "<password>",
+                            username = "<username>"
+                            password = "<password>"
                             permissions = ["<permission 1>", "<permission 2>", ...]
                         },
                         ...
@@ -350,100 +352,60 @@ When not in ``devMode``, the server will mask exceptions not meant for clients a
 This does not expose internal information to clients, strengthening privacy and security. CorDapps can have exceptions implement
 ``ClientRelevantError`` to allow them to reach RPC clients.
 
-Connection management
----------------------
-It is possible to not be able to connect to the server on the first attempt. In that case, the ``CordaRPCClient.start()``
-method will throw an exception. The following code snippet is an example of how to write a simple retry mechanism for
-such situations:
+Reconnecting RPC clients
+------------------------
 
-.. sourcecode:: Kotlin
+In the current version of Corda, an RPC client connected to a node stops functioning when the node becomes unavailable or the associated TCP connection is interrupted.
+Running RPC commands against a stopped node will just throw exceptions. Any subscriptions to ``Observable``\s that have been created before the disconnection will stop receiving events after the node restarts.
+RPCs which have a side effect, such as starting flows, may or may not have executed on the node depending on when the client was disconnected.
 
-    fun establishConnectionWithRetry(nodeHostAndPort: NetworkHostAndPort, username: String, password: String): CordaRPCConnection {
-        val retryInterval = 5.seconds
+It is the client's responsibility to handle these errors and reconnect once the node is running again. The client will have to re-subscribe to any ``Observable``\s in order to keep receiving updates.
+With regards to RPCs with side effects, the client will have to inspect the state of the node to infer whether the flow was executed or not before retrying it.
 
-        do {
-            val connection = try {
-                logger.info("Connecting to: $nodeHostAndPort")
-                val client = CordaRPCClient(
-                        nodeHostAndPort,
-                        object : CordaRPCClientConfiguration {
-                            override val connectionMaxRetryInterval = retryInterval
-                        }
-                )
-                val _connection = client.start(username, password)
-                // Check connection is truly operational before returning it.
-                val nodeInfo = _connection.proxy.nodeInfo()
-                require(nodeInfo.legalIdentitiesAndCerts.isNotEmpty())
-                _connection
-            } catch(secEx: ActiveMQSecurityException) {
-                // Happens when incorrect credentials provided - no point to retry connecting.
-                throw secEx
-            }
-            catch(ex: RPCException) {
-                // Deliberately not logging full stack trace as it will be full of internal stacktraces.
-                logger.info("Exception upon establishing connection: " + ex.message)
-                null
-            }
+Clients can make use of the options described below in order to take advantage of some automatic reconnection functionality that mitigates some of these issues.
 
-            if(connection != null) {
-                logger.info("Connection successfully established with: $nodeHostAndPort")
-                return connection
-            }
-            // Could not connect this time round - pause before giving another try.
-            Thread.sleep(retryInterval.toMillis())
-        } while (connection == null)
-    }
+Enabling automatic reconnection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-After a successful connection, it is possible for the server to become unavailable. In this case, all RPC calls will throw
-an exception and created observables will no longer receive observations. Below is an example of how to reconnect and
-back-fill any data that might have been missed while the connection was down. This is done by using the ``onError`` handler
-on the ``Observable`` returned by ``CordaRPCOps``.
+If you provide a list of addresses via the ``haAddressPool`` argument when instantiating a ``CordaRPCClient``, then automatic reconnection will be performed when the existing connection is dropped.
+However, any in-flight calls during reconnection will fail and previously returned observables will call ``onError``. The client code is responsible for waiting for the connection to be established
+in order to retry any calls, retrieve new observables and re-subscribe to them.
 
-.. sourcecode:: Kotlin
+Enabling graceful reconnection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    fun performRpcReconnect(nodeHostAndPort: NetworkHostAndPort, username: String, password: String) {
-        val connection = establishConnectionWithRetry(nodeHostAndPort, username, password)
-        val proxy = connection.proxy
+A more graceful form of reconnection is also available, which will block all in-flight calls until the connection is re-established and
+will also reconnect the existing ``Observable``\s, so that they keep emitting events to the existing subscribers.
 
-        val (stateMachineInfos, stateMachineUpdatesRaw) = proxy.stateMachinesFeed()
+.. warning:: In this approach, some events might be lost during a re-connection and not sent from the subscribed ``Observable``\s.
 
-        val retryableStateMachineUpdatesSubscription: AtomicReference<Subscription?> = AtomicReference(null)
-        val subscription: Subscription = stateMachineUpdatesRaw
-                .startWith(stateMachineInfos.map { StateMachineUpdate.Added(it) })
-                .subscribe({ clientCode(it) /* Client code here */ }, {
-                    // Terminate subscription such that nothing gets past this point to downstream Observables.
-                    retryableStateMachineUpdatesSubscription.get()?.unsubscribe()
-                    // It is good idea to close connection to properly mark the end of it. During re-connect we will create a new
-                    // client and a new connection, so no going back to this one. Also the server might be down, so we are
-                    // force closing the connection to avoid propagation of notification to the server side.
-                    connection.forceClose()
-                    // Perform re-connect.
-                    performRpcReconnect(nodeHostAndPort, username, password)
-                })
+You can enable this graceful form of reconnection by using the ``gracefulReconnect`` parameter in the following way:
 
-        retryableStateMachineUpdatesSubscription.set(subscription)
-    }
+.. sourcecode:: kotlin
 
-In this code snippet it is possible to see that function ``performRpcReconnect`` creates an RPC connection and implements
-the error handler upon subscription to an ``Observable``. The call to this ``onError`` handler will be made when failover
-happens then the code will terminate existing subscription, closes RPC connection and recursively calls ``performRpcReconnect``
-which will re-subscribe once RPC connection comes back online.
+   val cordaClient = CordaRPCClient(nodeRpcAddress)
+   val cordaRpcOps = cordaClient.start(rpcUserName, rpcUserPassword, gracefulReconnect = true).proxy
 
-Client code if fed with instances of ``StateMachineInfo`` using call ``clientCode(it)``. Upon re-connecting, this code receives
-all the items. Some of these items might have already been delivered to client code prior to failover occurred.
-It is down to client code in this case handle those duplicate items as appropriate.
+Logical  retries for flow invocation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+As described above, if you want to retry a flow that failed during a disconnection, you will first need to verify it has not been previously executed.
+The only way currently to confirm this is by performing a business-level query.
+
+.. note:: Future releases of Corda are expected to contain new APIs for coping with reconnection in a more resilient way providing stricter
+   safety guarantees.
+
 
 Wire security
 -------------
-``CordaRPCClient`` has an optional constructor parameter of type ``ClientRpcSslOptions``, defaulted to ``null``, which allows
-communication with the node using SSL. Default ``null`` value means no SSL used in the context of RPC.
+If TLS communications to the RPC endpoint are required the node should be configured with ``rpcSettings.useSSL=true`` see :doc:`corda-configuration-file`.
+The node admin should then create a node specific RPC certificate and key, by running the node once with ``generate-rpc-ssl-settings`` command specified (see :doc:`node-commandline`).
+The generated RPC TLS trust root certificate will be exported to a ``certificates/export/rpcssltruststore.jks`` file which should be distributed to the authorised RPC clients.
 
-To use this feature, the ``CordaRPCClient`` object provides a static factory method ``createWithSsl``.
+The connecting ``CordaRPCClient`` code must then use one of the constructors with a parameter of type ``ClientRpcSslOptions`` (`JavaDoc <api/javadoc/net/corda/client/rpc/CordaRPCClient.html>`_) and set this constructor
+argument with the appropriate path for the ``rpcssltruststore.jks`` file. The client connection will then use this to validate the RPC server handshake.
 
-In order for this to work, the client needs to provide a truststore containing a certificate received from the node admin.
-(The Node does not expect the RPC client to present a certificate, as the client already authenticates using the mechanism described above.)
-
-For the communication to be secure, we recommend using the standard SSL best practices for key management.
+Note that RPC TLS does not use mutual authentication, and delegates fine grained user authentication and authorisation to the RPC security features detailed above.
 
 Whitelisting classes with the Corda node
 ----------------------------------------

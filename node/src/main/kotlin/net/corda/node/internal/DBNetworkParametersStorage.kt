@@ -2,13 +2,9 @@ package net.corda.node.internal
 
 import net.corda.core.crypto.SecureHash
 import net.corda.core.identity.Party
-import net.corda.core.internal.DigitalSignatureWithCert
-import net.corda.core.internal.NamedCacheFactory
-import net.corda.core.internal.SignedDataWithCert
-import net.corda.core.internal.notary.HistoricNetworkParameterStorage
+import net.corda.core.internal.*
 import net.corda.core.node.NetworkParameters
 import net.corda.core.node.NotaryInfo
-import net.corda.core.node.services.NetworkParametersStorage
 import net.corda.core.serialization.SerializedBytes
 import net.corda.core.serialization.SingletonSerializeAsToken
 import net.corda.core.serialization.deserialize
@@ -20,29 +16,13 @@ import net.corda.node.utilities.AppendOnlyPersistentMap
 import net.corda.nodeapi.internal.crypto.X509CertificateFactory
 import net.corda.nodeapi.internal.crypto.X509Utilities
 import net.corda.nodeapi.internal.network.SignedNetworkParameters
+import net.corda.nodeapi.internal.network.verifiedNetworkMapCert
 import net.corda.nodeapi.internal.network.verifiedNetworkParametersCert
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.NODE_DATABASE_PREFIX
-import org.apache.commons.lang.ArrayUtils
+import org.apache.commons.lang3.ArrayUtils
 import java.security.cert.X509Certificate
 import javax.persistence.*
-
-interface NetworkParametersStorageInternal : NetworkParametersStorage {
-    /**
-     * Return parameters epoch for the given parameters hash. Null if there are no parameters for this hash in the storage and we are unable to
-     * get them from network map.
-     */
-    fun getEpochFromHash(hash: SecureHash): Int?
-
-    /**
-     * Save signed network parameters data. Internally network parameters bytes should be stored with the signature.
-     * It's because of ability of older nodes to function in network where parameters were extended with new fields.
-     * Hash should always be calculated over the serialized bytes.
-     */
-    fun saveParameters(signedNetworkParameters: SignedDataWithCert<NetworkParameters>)
-
-    fun setCurrentParameters(currentSignedParameters: SignedDataWithCert<NetworkParameters>, trustRoot: X509Certificate)
-}
 
 class DBNetworkParametersStorage(
         cacheFactory: NamedCacheFactory,
@@ -50,7 +30,7 @@ class DBNetworkParametersStorage(
         // TODO It's very inefficient solution (at least at the beginning when node joins without historical data)
         // We could have historic parameters endpoint or always add parameters as an attachment to the transaction.
         private val networkMapClient: NetworkMapClient?
-) : NetworkParametersStorageInternal, HistoricNetworkParameterStorage, SingletonSerializeAsToken() {
+) : NetworkParametersStorage, SingletonSerializeAsToken() {
     private lateinit var trustRoot: X509Certificate
 
     companion object {
@@ -95,9 +75,15 @@ class DBNetworkParametersStorage(
 
     override fun getEpochFromHash(hash: SecureHash): Int? = lookup(hash)?.epoch
 
+    override fun lookupSigned(hash: SecureHash): SignedDataWithCert<NetworkParameters>? {
+        return database.transaction { hashToParameters[hash] }
+    }
+
+    override fun hasParameters(hash: SecureHash): Boolean = hash in hashToParameters
+
     override fun saveParameters(signedNetworkParameters: SignedNetworkParameters) {
         log.trace { "Saving new network parameters to network parameters storage." }
-        val networkParameters = signedNetworkParameters.verified()
+        val networkParameters = signedNetworkParameters.verifiedNetworkMapCert(trustRoot)
         val hash = signedNetworkParameters.raw.hash
         log.trace { "Parameters to save $networkParameters with hash $hash" }
         database.transaction {
@@ -105,7 +91,6 @@ class DBNetworkParametersStorage(
         }
     }
 
-    // TODO For the future we could get them also as signed (by network operator) attachments on transactions.
     private fun tryDownloadUnknownParameters(parametersHash: SecureHash): NetworkParameters? {
         return if (networkMapClient != null) {
             try {
@@ -130,13 +115,13 @@ class DBNetworkParametersStorage(
         val currentParameters = lookup(currentHash)
                 ?: throw IllegalStateException("Unable to obtain NotaryInfo – current network parameters not set.")
         val inCurrentParams = currentParameters.notaries.singleOrNull { it.identity == party }
-        if (inCurrentParams == null) {
-            val inOldParams = hashToParameters.allPersisted().flatMap { (_, signedParams) ->
-                val parameters = signedParams.raw.deserialize()
-                parameters.notaries.asSequence()
-            }.firstOrNull { it.identity == party }
-            return inOldParams
-        } else return inCurrentParams
+        if (inCurrentParams != null) return inCurrentParams
+        return hashToParameters.allPersisted.use {
+            it.flatMap { (_, signedNetParams) -> signedNetParams.raw.deserialize().notaries.stream() }
+                    .filter { it.identity == party }
+                    .findFirst()
+                    .orElse(null)
+        }
     }
 
     @Entity

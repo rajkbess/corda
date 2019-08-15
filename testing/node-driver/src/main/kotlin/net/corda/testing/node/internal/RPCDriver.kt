@@ -19,8 +19,8 @@ import net.corda.core.node.NetworkParameters
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.seconds
 import net.corda.node.internal.security.RPCSecurityManagerImpl
-import net.corda.node.services.messaging.RPCServer
-import net.corda.node.services.messaging.RPCServerConfiguration
+import net.corda.node.services.rpc.RPCServer
+import net.corda.node.services.rpc.RPCServerConfiguration
 import net.corda.nodeapi.RPCApi
 import net.corda.nodeapi.internal.ArtemisTcpTransport
 import net.corda.serialization.internal.AMQP_RPC_CLIENT_CONTEXT
@@ -32,9 +32,7 @@ import net.corda.testing.driver.internal.incrementalPortAllocation
 import net.corda.testing.internal.TestingNamedCacheFactory
 import net.corda.testing.internal.fromUserList
 import net.corda.testing.node.NotarySpec
-import net.corda.testing.node.TestCordapp
 import net.corda.testing.node.User
-import net.corda.testing.node.internal.DriverDSLImpl.Companion.cordappsInCurrentAndAdditionalPackages
 import org.apache.activemq.artemis.api.core.SimpleString
 import org.apache.activemq.artemis.api.core.TransportConfiguration
 import org.apache.activemq.artemis.api.core.client.ActiveMQClient
@@ -103,25 +101,26 @@ val rpcTestUser = User("user1", "test", permissions = emptySet())
 val fakeNodeLegalName = CordaX500Name(organisation = "Not:a:real:name", locality = "Nowhere", country = "GB")
 
 // Use a global pool so that we can run RPC tests in parallel
-private val globalPortAllocation = incrementalPortAllocation(10000)
-private val globalDebugPortAllocation = incrementalPortAllocation(5005)
+private val globalPortAllocation = incrementalPortAllocation()
+private val globalDebugPortAllocation = incrementalPortAllocation()
 
 fun <A> rpcDriver(
         isDebug: Boolean = false,
-        driverDirectory: Path = Paths.get("build", getTimestampAsDirectoryName()),
+        driverDirectory: Path = Paths.get("build") / "rpc-driver" /  getTimestampAsDirectoryName(),
         portAllocation: PortAllocation = globalPortAllocation,
         debugPortAllocation: PortAllocation = globalDebugPortAllocation,
         systemProperties: Map<String, String> = emptyMap(),
         useTestClock: Boolean = false,
         startNodesInProcess: Boolean = false,
         waitForNodesToFinish: Boolean = false,
+        extraCordappPackagesToScan: List<String> = emptyList(),
         notarySpecs: List<NotarySpec> = emptyList(),
         externalTrace: Trace? = null,
         @Suppress("DEPRECATION") jmxPolicy: JmxPolicy = JmxPolicy(),
         networkParameters: NetworkParameters = testNetworkParameters(),
         notaryCustomOverrides: Map<String, Any?> = emptyMap(),
         inMemoryDB: Boolean = true,
-        cordappsForAllNodes: Collection<TestCordapp> = cordappsInCurrentAndAdditionalPackages(),
+        cordappsForAllNodes: Collection<TestCordappInternal>? = null,
         dsl: RPCDriverDSL.() -> A
 ): A {
     return genericDriver(
@@ -135,14 +134,14 @@ fun <A> rpcDriver(
                             isDebug = isDebug,
                             startNodesInProcess = startNodesInProcess,
                             waitForAllNodesToFinish = waitForNodesToFinish,
+                            extraCordappPackagesToScan = extraCordappPackagesToScan,
                             notarySpecs = notarySpecs,
                             jmxPolicy = jmxPolicy,
                             compatibilityZone = null,
                             networkParameters = networkParameters,
                             notaryCustomOverrides = notaryCustomOverrides,
                             inMemoryDB = inMemoryDB,
-                            cordappsForAllNodes = cordappsForAllNodes,
-                            signCordapps = false
+                            cordappsForAllNodes = cordappsForAllNodes
                     ), externalTrace
             ),
             coerce = { it },
@@ -177,6 +176,7 @@ data class RPCDriverDSL(
         const val notificationAddress = "notifications"
 
         private fun ConfigurationImpl.configureCommonSettings(maxFileSize: Int, maxBufferedBytesPerClient: Long) {
+            name = "RPCDriver"
             managementNotificationAddress = SimpleString(notificationAddress)
             isPopulateValidatedUser = true
             journalBufferSize_NIO = maxFileSize
@@ -204,7 +204,8 @@ data class RPCDriverDSL(
             addressesSettings = mapOf(
                     "${RPCApi.RPC_CLIENT_QUEUE_NAME_PREFIX}.#" to AddressSettings().apply {
                         maxSizeBytes = maxBufferedBytesPerClient
-                        addressFullMessagePolicy = AddressFullMessagePolicy.FAIL
+                        addressFullMessagePolicy = AddressFullMessagePolicy.PAGE
+                        pageSizeBytes = maxSizeBytes / 10
                     }
             )
         }
@@ -223,6 +224,7 @@ data class RPCDriverDSL(
                 bindingsDirectory = "$artemisDir/bindings"
                 journalDirectory = "$artemisDir/journal"
                 largeMessagesDirectory = "$artemisDir/large-messages"
+                pagingDirectory = "$artemisDir/paging"
                 acceptorConfigurations = setOf(ArtemisTcpTransport.rpcAcceptorTcpTransport(hostAndPort, null))
                 configureCommonSettings(maxFileSize, maxBufferedBytesPerClient)
             }
@@ -315,7 +317,7 @@ data class RPCDriverDSL(
             rpcUser: User = rpcTestUser,
             nodeLegalName: CordaX500Name = fakeNodeLegalName,
             maxFileSize: Int = MAX_MESSAGE_SIZE,
-            maxBufferedBytesPerClient: Long = 10L * MAX_MESSAGE_SIZE,
+            maxBufferedBytesPerClient: Long = 5L * MAX_MESSAGE_SIZE,
             configuration: RPCServerConfiguration = RPCServerConfiguration.DEFAULT,
             customPort: NetworkHostAndPort? = null,
             ops: I

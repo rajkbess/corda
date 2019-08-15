@@ -1,3 +1,9 @@
+.. highlight:: kotlin
+.. raw:: html
+
+   <script type="text/javascript" src="_static/jquery.js"></script>
+   <script type="text/javascript" src="_static/codesets.js"></script>
+
 Transaction tear-offs
 =====================
 
@@ -43,7 +49,7 @@ transaction components is exactly the same. Note that unlike ``WireTransaction``
 
 The following code snippet is taken from ``NodeInterestRates.kt`` and implements a signing part of an Oracle.
 
-.. literalinclude:: ../../samples/irs-demo/cordapp/src/main/kotlin/net/corda/irs/api/NodeInterestRates.kt
+.. literalinclude:: ../../samples/irs-demo/cordapp/workflows-irs/src/main/kotlin/net.corda.irs/api/NodeInterestRates.kt
     :language: kotlin
     :start-after: DOCSTART 1
     :end-before: DOCEND 1

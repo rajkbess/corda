@@ -1,23 +1,32 @@
 package net.corda.core.internal
 
 import net.corda.core.DeleteForDJVM
-import net.corda.core.cordapp.Cordapp
-import net.corda.core.cordapp.CordappConfig
-import net.corda.core.cordapp.CordappContext
-import net.corda.core.crypto.SecureHash
+import net.corda.core.contracts.Attachment
+import net.corda.core.contracts.ContractAttachment
+import net.corda.core.contracts.ContractClassName
+import net.corda.core.flows.DataVendingFlow
 import net.corda.core.flows.FlowLogic
+import net.corda.core.node.NetworkParameters
 import net.corda.core.node.ServicesForResolution
 import net.corda.core.node.ZoneVersionTooLowException
+import net.corda.core.node.services.AttachmentStorage
+import net.corda.core.node.services.vault.AttachmentQueryCriteria
+import net.corda.core.node.services.vault.AttachmentSort
+import net.corda.core.node.services.vault.Builder
+import net.corda.core.node.services.vault.Sort
+import net.corda.core.serialization.CordaSerializable
 import net.corda.core.serialization.SerializationContext
 import net.corda.core.transactions.LedgerTransaction
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.transactions.WireTransaction
 import org.slf4j.MDC
+import java.security.PublicKey
+import java.util.jar.JarInputStream
 
 // *Internal* Corda-specific utilities.
 
-const val PLATFORM_VERSION = 4
+const val PLATFORM_VERSION = 5
 
 fun ServicesForResolution.ensureMinimumPlatformVersion(requiredMinPlatformVersion: Int, feature: String) {
     checkMinimumPlatformVersion(networkParameters.minimumPlatformVersion, requiredMinPlatformVersion, feature)
@@ -33,6 +42,9 @@ fun checkMinimumPlatformVersion(minimumPlatformVersion: Int, requiredMinPlatform
     }
 }
 
+@Throws(NumberFormatException::class)
+fun getJavaUpdateVersion(javaVersion: String): Long = javaVersion.substringAfter("_").substringBefore("-").toLong()
+
 /** Provide access to internal method for AttachmentClassLoaderTests. */
 @DeleteForDJVM
 fun TransactionBuilder.toWireTransaction(services: ServicesForResolution, serializationContext: SerializationContext): WireTransaction {
@@ -43,10 +55,6 @@ fun TransactionBuilder.toWireTransaction(services: ServicesForResolution, serial
 @DeleteForDJVM
 fun TransactionBuilder.toLedgerTransaction(services: ServicesForResolution, serializationContext: SerializationContext): LedgerTransaction {
     return toLedgerTransactionWithContext(services, serializationContext)
-}
-
-fun createCordappContext(cordapp: Cordapp, attachmentId: SecureHash?, classLoader: ClassLoader, config: CordappConfig): CordappContext {
-    return CordappContext(cordapp, attachmentId, classLoader, config)
 }
 
 /** Checks if this flow is an idempotent flow. */
@@ -61,15 +69,73 @@ internal fun SignedTransaction.pushToLoggingContext() {
     MDC.put("tx_id", id.toString())
 }
 
+private fun isPackageValid(packageName: String): Boolean {
+    return packageName.isNotEmpty() &&
+            !packageName.endsWith(".") &&
+            packageName.split(".").all { token ->
+                Character.isJavaIdentifierStart(token[0]) && token.toCharArray().drop(1).all { Character.isJavaIdentifierPart(it) }
+            }
+}
+
+/** Check if a string is a legal Java package name. */
+fun requirePackageValid(name: String) {
+    require(isPackageValid(name)) { "Invalid Java package name: `$name`." }
+}
+
 /**
- * List implementation that applies the expensive [transform] function only when the element is accessed and caches calculated values.
- * Size is very cheap as it doesn't call [transform].
+ * This is a wildcard payload to be used by the invoker of the [DataVendingFlow] to allow unlimited access to its vault.
+ *
+ * TODO Fails with a serialization exception if it is not a list. Why?
  */
-class LazyMappedList<T, U>(val originalList: List<T>, val transform: (T, Int) -> U) : AbstractList<U>() {
-    private val partialResolvedList = MutableList<U?>(originalList.size) { null }
+@CordaSerializable
+object RetrieveAnyTransactionPayload : ArrayList<Any>()
 
-    override val size = originalList.size
+/**
+ * Returns true if the [fullClassName] is in a subpackage of [packageName].
+ * E.g.: "com.megacorp" owns "com.megacorp.tokens.MegaToken"
+ *
+ * Note: The ownership check is ignoring case to prevent people from just releasing a jar with: "com.megaCorp.megatoken" and pretend they are MegaCorp.
+ * By making the check case insensitive, the node will require that the jar is signed by MegaCorp, so the attack fails.
+ */
+private fun owns(packageName: String, fullClassName: String): Boolean = fullClassName.startsWith("$packageName.", ignoreCase = true)
 
-    override fun get(index: Int) = partialResolvedList[index]
-            ?: transform(originalList[index], index).also { computed -> partialResolvedList[index] = computed }
+/** Returns the public key of the package owner of the [contractClassName], or null if not owned. */
+fun NetworkParameters.getPackageOwnerOf(contractClassName: ContractClassName): PublicKey? {
+    return packageOwnership.entries.singleOrNull { owns(it.key, contractClassName) }?.value
+}
+
+// Make sure that packages don't overlap so that ownership is clear.
+fun noPackageOverlap(packages: Collection<String>): Boolean {
+    return packages.all { outer -> packages.none { inner -> inner != outer && inner.startsWith("$outer.") } }
+}
+
+/**
+ * Scans trusted (installed locally) attachments to find all that contain the [className].
+ * This is required as a workaround until explicit cordapp dependencies are implemented.
+ * DO NOT USE IN CLIENT code.
+ *
+ * @return the attachments with the highest version.
+ *
+ * TODO: Should throw when the class is found in multiple contract attachments (not different versions).
+ */
+fun AttachmentStorage.internalFindTrustedAttachmentForClass(className: String): Attachment? {
+    val allTrusted = queryAttachments(
+            AttachmentQueryCriteria.AttachmentsQueryCriteria().withUploader(Builder.`in`(TRUSTED_UPLOADERS)),
+            AttachmentSort(listOf(AttachmentSort.AttachmentSortColumn(AttachmentSort.AttachmentSortAttribute.VERSION, Sort.Direction.DESC))))
+
+    // TODO - add caching if performance is affected.
+    for (attId in allTrusted) {
+        val attch = openAttachment(attId)!!
+        if (attch.openAsJAR().use { hasFile(it, "$className.class") }) return attch
+    }
+    return null
+}
+
+private fun hasFile(jarStream: JarInputStream, className: String): Boolean {
+    while (true) {
+        val e = jarStream.nextJarEntry ?: return false
+        if (e.name == className) {
+            return true
+        }
+    }
 }

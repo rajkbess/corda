@@ -1,12 +1,13 @@
 package net.corda.bank.api
 
 import net.corda.bank.api.BankOfCordaWebApi.IssueRequestParams
-import net.corda.client.rpc.CordaRPCClient
+import net.corda.client.rpc.internal.ReconnectingCordaRPCOps
 import net.corda.core.messaging.startFlow
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.NetworkHostAndPort
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.getOrThrow
+import net.corda.core.utilities.loggerFor
 import net.corda.finance.flows.CashIssueAndPaymentFlow
 import net.corda.testing.http.HttpApi
 
@@ -16,6 +17,8 @@ import net.corda.testing.http.HttpApi
 object BankOfCordaClientApi {
     const val BOC_RPC_USER = "bankUser"
     const val BOC_RPC_PWD = "test"
+
+    private val logger = loggerFor<BankOfCordaClientApi>()
 
     /**
      * HTTP API
@@ -29,13 +32,18 @@ object BankOfCordaClientApi {
     /**
      * RPC API
      *
-     * @return a pair of the issuing and payment transactions.
+     * @return a payment transaction (following successful issuance of cash to self).
      */
-    fun requestRPCIssue(rpcAddress: NetworkHostAndPort, params: IssueRequestParams): SignedTransaction {
-        val client = CordaRPCClient(rpcAddress)
+    fun requestRPCIssue(rpcAddress: NetworkHostAndPort, params: IssueRequestParams): SignedTransaction = requestRPCIssueHA(listOf(rpcAddress), params)
+
+    /**
+     * RPC API
+     *
+     * @return a cash issue transaction.
+     */
+    fun requestRPCIssueHA(availableRpcServers: List<NetworkHostAndPort>, params: IssueRequestParams): SignedTransaction {
         // TODO: privileged security controls required
-        client.start(BOC_RPC_USER, BOC_RPC_PWD).use { connection ->
-            val rpc = connection.proxy
+        ReconnectingCordaRPCOps(availableRpcServers, BOC_RPC_USER, BOC_RPC_PWD).use { rpc->
             rpc.waitUntilNetworkReady().getOrThrow()
 
             // Resolve parties via RPC
@@ -47,6 +55,7 @@ object BankOfCordaClientApi {
             val anonymous = true
             val issuerBankPartyRef = OpaqueBytes.of(params.issuerBankPartyRef.toByte())
 
+            logger.info("${rpc.nodeInfo()} issuing ${params.amount} to transfer to $issueToParty ...")
             return rpc.startFlow(::CashIssueAndPaymentFlow, params.amount, issuerBankPartyRef, issueToParty, anonymous, notaryLegalIdentity)
                     .returnValue.getOrThrow().stx
         }

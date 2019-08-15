@@ -11,6 +11,7 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.crypto.random63BitValue
 import net.corda.core.flows.*
 import net.corda.core.identity.Party
+import net.corda.core.internal.DeclaredField
 import net.corda.core.internal.concurrent.flatMap
 import net.corda.core.messaging.MessageRecipients
 import net.corda.core.node.services.PartyInfo
@@ -31,13 +32,14 @@ import net.corda.testing.core.ALICE_NAME
 import net.corda.testing.core.BOB_NAME
 import net.corda.testing.core.dummyCommand
 import net.corda.testing.core.singleIdentity
+import net.corda.testing.flows.registerCordappFlowFactory
 import net.corda.testing.internal.LogHelper
 import net.corda.testing.node.InMemoryMessagingNetwork.MessageTransfer
 import net.corda.testing.node.InMemoryMessagingNetwork.ServicePeerAllocationStrategy.RoundRobin
 import net.corda.testing.node.internal.*
-import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assertions.*
 import org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType
+import org.assertj.core.api.Condition
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -45,6 +47,7 @@ import rx.Notification
 import rx.Observable
 import java.time.Instant
 import java.util.*
+import java.util.function.Predicate
 import kotlin.reflect.KClass
 import kotlin.test.assertFailsWith
 
@@ -66,7 +69,7 @@ class FlowFrameworkTests {
     @Before
     fun setUpMockNet() {
         mockNet = InternalMockNetwork(
-                cordappsForAllNodes = cordappsForPackages("net.corda.testing.contracts") + FINANCE_CORDAPP,
+                cordappsForAllNodes = listOf(DUMMY_CONTRACTS_CORDAPP),
                 servicePeerAllocationStrategy = RoundRobin()
         )
 
@@ -186,6 +189,7 @@ class FlowFrameworkTests {
                 .isThrownBy { receivingFiber.resultFuture.getOrThrow() }
                 .withMessage("Nothing useful")
                 .withStackTraceContaining(ReceiveFlow::class.java.name)  // Make sure the stack trace is that of the receiving flow
+                .withStackTraceContaining("Received counter-flow exception from peer")
         bobNode.database.transaction {
             assertThat(bobNode.internals.checkpointStorage.checkpoints()).isEmpty()
         }
@@ -193,6 +197,7 @@ class FlowFrameworkTests {
         assertThat(receivingFiber.state).isEqualTo(Strand.State.WAITING)
         assertThat((erroringFlow.get().stateMachine as FlowStateMachineImpl).state).isEqualTo(Strand.State.WAITING)
         assertThat(erroringFlowSteps.get()).containsExactly(
+                Notification.createOnNext(ProgressTracker.STARTING),
                 Notification.createOnNext(ExceptionFlow.START_STEP),
                 Notification.createOnError(erroringFlow.get().exceptionThrown)
         )
@@ -205,6 +210,29 @@ class FlowFrameworkTests {
         // Make sure the original stack trace isn't sent down the wire
         val lastMessage = receivedSessionMessages.last().message as ExistingSessionMessage
         assertThat((lastMessage.payload as ErrorSessionMessage).flowException!!.stackTrace).isEmpty()
+    }
+
+    @Test
+    fun `sub-class of FlowException can have a peer field without causing serialisation problems`() {
+        val exception = MyPeerFlowException("Nothing useful", alice)
+        bobNode.registerCordappFlowFactory(ReceiveFlow::class) {
+            ExceptionFlow { exception }
+        }
+
+        val receivingFiber = aliceNode.services.startFlow(ReceiveFlow(bob)) as FlowStateMachineImpl
+
+        mockNet.runNetwork()
+
+        assertThatExceptionOfType(MyPeerFlowException::class.java)
+            .isThrownBy { receivingFiber.resultFuture.getOrThrow() }
+            .has(Condition(Predicate<MyPeerFlowException> { it.peer == alice }, "subclassed peer field has original value"))
+            .has(Condition(Predicate<MyPeerFlowException> {
+                DeclaredField<Party?>(
+                    FlowException::class.java,
+                    "peer",
+                    it
+                ).value == bob
+            }, "FlowException's private peer field has value set"))
     }
 
     private class ConditionalExceptionFlow(val otherPartySession: FlowSession, val sendPayload: Any) : FlowLogic<Unit>() {
@@ -272,25 +300,25 @@ class FlowFrameworkTests {
                 .addCommand(dummyCommand(alice.owningKey))
         val stx = aliceNode.services.signInitialTransaction(ptx)
 
-        val committerStx = aliceNode.registerCordappFlowFactory(CommitReceiverFlow::class) {
-            CommitterFlow(it)
+        val committerStx = aliceNode.registerCordappFlowFactory(CommitterFlow::class) {
+            CommitReceiverFlow(it, stx.id)
         }.flatMap { it.stateMachine.resultFuture }
         // The waitForLedgerCommit call has to occur on separate flow
-        val waiterStx = bobNode.services.startFlow(WaiterFlow(stx.id)).resultFuture
-        val commitReceiverStx = bobNode.services.startFlow(CommitReceiverFlow(stx, alice)).resultFuture
+        val waiterStx = bobNode.services.startFlow(WaitForLedgerCommitFlow(stx.id)).resultFuture
+        val commitReceiverStx = bobNode.services.startFlow(CommitterFlow(stx, alice)).resultFuture
         mockNet.runNetwork()
         assertThat(committerStx.getOrThrow()).isEqualTo(waiterStx.getOrThrow()).isEqualTo(commitReceiverStx.getOrThrow())
     }
 
     @Test
-    fun `committer throws exception before calling the finality flow`() {
+    fun `waitForLedgerCommit throws exception if any active session ends in error`() {
         val ptx = TransactionBuilder(notary = notaryIdentity)
                 .addOutputState(DummyState(), DummyContract.PROGRAM_ID)
                 .addCommand(dummyCommand())
         val stx = aliceNode.services.signInitialTransaction(ptx)
 
-        aliceNode.registerCordappFlowFactory(CommitReceiverFlow::class) { CommitterFlow(it) { throw Exception("Error") } }
-        val waiter = bobNode.services.startFlow(CommitReceiverFlow(stx, alice)).resultFuture
+        aliceNode.registerCordappFlowFactory(WaitForLedgerCommitFlow::class) { ExceptionFlow { throw Exception("Error") } }
+        val waiter = bobNode.services.startFlow(WaitForLedgerCommitFlow(stx.id, alice)).resultFuture
         mockNet.runNetwork()
         assertThatExceptionOfType(UnexpectedFlowEndException::class.java).isThrownBy {
             waiter.getOrThrow()
@@ -357,7 +385,7 @@ class FlowFrameworkTests {
     }
 
     @Test
-    fun `session init with unknown class is sent to the flow hospital, from where it's dropped`() {
+    fun `session init with unknown class is sent to the flow hospital, from where we then drop it`() {
         aliceNode.sendSessionMessage(InitialSessionMessage(SessionId(random63BitValue()), 0, "not.a.real.Class", 1, "", null), bob)
         mockNet.runNetwork()
         assertThat(receivedSessionMessages).hasSize(1) // Only the session-init is expected as the session-reject is blocked by the flow hospital
@@ -413,6 +441,7 @@ class FlowFrameworkTests {
         erroringFlowFuture.getOrThrow()
         val flowSteps = erroringFlowSteps.get()
         assertThat(flowSteps).containsExactly(
+                Notification.createOnNext(ProgressTracker.STARTING),
                 Notification.createOnNext(ExceptionFlow.START_STEP),
                 Notification.createOnError(erroringFlowFuture.get().exceptionThrown)
         )
@@ -432,6 +461,28 @@ class FlowFrameworkTests {
                 bobNode sent sessionConfirm() to aliceNode,
                 bobNode sent errorMessage() to aliceNode
         )
+    }
+
+    @Test
+    fun `initiating flow using unknown AnonymousParty`() {
+        val anonymousBob = bobNode.services.keyManagementService.freshKeyAndCert(bobNode.info.legalIdentitiesAndCerts.single(), false).party.anonymise()
+        bobNode.registerCordappFlowFactory(SendAndReceiveFlow::class) { SingleInlinedSubFlow(it) }
+        val result = aliceNode.services.startFlow(SendAndReceiveFlow(anonymousBob, "Hello")).resultFuture
+        mockNet.runNetwork()
+        assertThatIllegalArgumentException()
+                .isThrownBy { result.getOrThrow() }
+                .withMessage("We do not know who $anonymousBob belongs to")
+    }
+
+    @Test
+    fun `initiating flow using known AnonymousParty`() {
+        val anonymousBob = bobNode.services.keyManagementService.freshKeyAndCert(bobNode.info.legalIdentitiesAndCerts.single(), false)
+        aliceNode.services.identityService.verifyAndRegisterIdentity(anonymousBob)
+        val bobResponderFlow = bobNode.registerCordappFlowFactory(SendAndReceiveFlow::class) { SingleInlinedSubFlow(it) }
+        val result = aliceNode.services.startFlow(SendAndReceiveFlow(anonymousBob.party.anonymise(), "Hello")).resultFuture
+        mockNet.runNetwork()
+        bobResponderFlow.getOrThrow()
+        assertThat(result.getOrThrow()).isEqualTo("HelloHello")
     }
 
     //region Helpers
@@ -484,28 +535,29 @@ class FlowFrameworkTests {
         }
     }
 
-    class WaiterFlow(private val txId: SecureHash) : FlowLogic<SignedTransaction>() {
+    @InitiatingFlow
+    class WaitForLedgerCommitFlow(private val txId: SecureHash, private val party: Party? = null) : FlowLogic<SignedTransaction>() {
         @Suspendable
-        override fun call(): SignedTransaction = waitForLedgerCommit(txId)
+        override fun call(): SignedTransaction {
+            if (party != null) {
+                initiateFlow(party).send(Unit)
+            }
+            return waitForLedgerCommit(txId)
+        }
     }
 
     @InitiatingFlow
-    class CommitReceiverFlow(val stx: SignedTransaction, private val otherParty: Party) : FlowLogic<SignedTransaction>() {
+    class CommitterFlow(private val stx: SignedTransaction, private val otherParty: Party) : FlowLogic<SignedTransaction>() {
         @Suspendable
         override fun call(): SignedTransaction {
-            val otherPartySession = initiateFlow(otherParty)
-            otherPartySession.send(stx)
-            return subFlow(ReceiveFinalityFlow(otherPartySession, expectedTxId = stx.id))
+            val session = initiateFlow(otherParty)
+            return subFlow(FinalityFlow(stx, session))
         }
     }
 
-    class CommitterFlow(private val otherPartySession: FlowSession, private val throwException: (() -> Exception)? = null) : FlowLogic<SignedTransaction>() {
+    class CommitReceiverFlow(private val otherSide: FlowSession, private val txId: SecureHash) : FlowLogic<SignedTransaction>() {
         @Suspendable
-        override fun call(): SignedTransaction {
-            val stx = otherPartySession.receive<SignedTransaction>().unwrap { it }
-            if (throwException != null) throw throwException.invoke()
-            return subFlow(FinalityFlow(stx, otherPartySession))
-        }
+        override fun call(): SignedTransaction = subFlow(ReceiveFinalityFlow(otherSide, expectedTxId = txId))
     }
 
     private class LazyServiceHubAccessFlow : FlowLogic<Unit>() {
@@ -729,13 +781,15 @@ internal class MyFlowException(override val message: String) : FlowException() {
     override fun hashCode(): Int = message.hashCode()
 }
 
+internal class MyPeerFlowException(override val message: String, val peer: Party) : FlowException()
+
 @InitiatingFlow
-internal class SendAndReceiveFlow(private val otherParty: Party, private val payload: Any, private val otherPartySession: FlowSession? = null) : FlowLogic<Any>() {
+internal class SendAndReceiveFlow(private val destination: Destination, private val payload: Any, private val otherPartySession: FlowSession? = null) : FlowLogic<Any>() {
     constructor(otherPartySession: FlowSession, payload: Any) : this(otherPartySession.counterparty, payload, otherPartySession)
 
     @Suspendable
     override fun call(): Any {
-        return (otherPartySession ?: initiateFlow(otherParty)).sendAndReceive<Any>(payload).unwrap { it }
+        return (otherPartySession ?: initiateFlow(destination)).sendAndReceive<Any>(payload).unwrap { it }
     }
 }
 

@@ -7,22 +7,6 @@ Deterministic JVM
 Introduction
 ~~~~~~~~~~~~
 
-The code in the DJVM module has not yet been integrated with the rest of the platform.  It will eventually become a
-part of the node and enforce deterministic and secure execution of smart contract code, which is mobile and may
-propagate around the network without human intervention.
-
-Currently, it stands alone as an evaluation version. We want to give developers the ability to start trying it out and
-get used to developing deterministic code under the set of constraints that we envision will be placed on contract code
-in the future.
-
-.. warning::
-    The deterministic sandbox is currently a standalone evaluation version of what we, in the future, want to integrate
-    with the Corda platform to protect execution of contract code and ensure deterministic behaviour.
-
-
-Motivation and Overview
-~~~~~~~~~~~~~~~~~~~~~~~
-
 It is important that all nodes that process a transaction always agree on whether it is valid or not. Because
 transaction types are defined using JVM byte code, this means that the execution of that byte code must be fully
 deterministic. Out of the box a standard JVM is not fully deterministic, thus we must make some modifications in order
@@ -32,9 +16,16 @@ So, what does it mean for a piece of code to be fully deterministic?  Ultimately
 as a function, is pure. In other words, given the same set of inputs, it will always produce the same set of outputs
 without inflicting any side-effects that might later affect the computation.
 
+.. important:: The code in the DJVM module has not yet been integrated with the rest of the platform.  It will eventually become a
+   part of the node and enforce deterministic and secure execution of smart contract code, which is mobile and may
+   propagate around the network without human intervention.
+
+   Currently, it stands alone as an evaluation version. We want to give developers the ability to start trying it out and
+   get used to developing deterministic code under the set of constraints that we envision will be placed on contract code
+   in the future.
 
 Non-Determinism
-...............
+~~~~~~~~~~~~~~~
 
 For a program running on the JVM, non-determinism could be introduced by a range of sources, for instance:
 
@@ -65,11 +56,11 @@ generation for ``java.lang.Object``. Contract code is rewritten the first time i
 for future use.
 
 Abstraction
-...........
+~~~~~~~~~~~
 
 The sandbox is abstracted away as an executor which takes as input an implementation of the interface
-``SandboxedRunnable<in Input, out Output>``, dereferenced by a ``ClassSource``. This interface has a single method that
-needs implementing, namely ``run(Input): Output``.
+``Function<in Input, out Output>``, dereferenced by a ``ClassSource``. This interface has a single method that
+needs implementing, namely ``apply(Input): Output``.
 
 A ``ClassSource`` object referencing such an implementation can be passed into the ``SandboxExecutor<in Input, out
 Output>`` together with an input of type ``Input``. The executor has operations for both execution and static
@@ -77,7 +68,7 @@ validation, namely ``run()`` and ``validate()``. These methods both return a sum
 
  * In the case of execution, this summary object has information about:
     * Whether or not the runnable was successfully executed.
-    * If successful, the return value of ``SandboxedRunnable.run()``.
+    * If successful, the return value of ``Function.apply()``.
     * If failed, the exception that was raised.
     * And in both cases, a summary of all accrued costs during execution.
 
@@ -89,7 +80,7 @@ validation, namely ``run()`` and ``validate()``. These methods both return a sum
       severity ``ERROR`` will prevent execution.
 
 The sandbox has a configuration that applies to the execution of a specific runnable. This configuration, on a higher
-level, contains a set of rules, definition providers, emitters and a whitelist.
+level, contains a set of rules, definition providers and emitters.
 
 .. image:: resources/djvm-overview.png
 
@@ -102,7 +93,9 @@ type's members. This is what controls things like ensuring that all methods impl
 and normalisation of synchronised methods.
 
 Lastly, there is a set of emitters. These are used to instrument the byte code for cost accounting purposes, and also
-to inject code for checks that we want to perform at runtime or modifications to out-of-the-box behaviour.
+to inject code for checks that we want to perform at runtime or modifications to out-of-the-box behaviour. Many of
+these emitters will rewrite non-deterministic operations to throw ``RuleViolationError`` exceptions instead, which
+means that the ultimate proof that a function is *truly* deterministic is that it executes successfully inside the DJVM.
 
 
 Static Byte Code Analysis
@@ -116,7 +109,7 @@ work may well introduce additional constraints that we would want to place on th
 
 .. note::
     It is worth noting that not only smart contract code is instrumented by the sandbox, but all code that it can
-    transitively reach. In particular this means that the Java runtime classes (that have not been whitelisted) and any
+    transitively reach. In particular this means that the Java runtime classes and any
     other library code used in the program are also instrumented and persisted ahead of time.
 
 
@@ -138,15 +131,6 @@ tries to catch such exceptions, as doing so would allow the user to bypass the t
 profile.
 
 
-Only Allow Explicitly Whitelisted Runtime API
-.............................................
-
-Ensures that constant pool references are mapped against a verified subset of the Java runtime libraries. Said subset
-excludes functionality that contract code should not have access to, such as native code. This whitelist has been
-trimmed down to the bare minimum needed, a few classes in ``java.lang``, so that also the Java runtime libraries
-themselves are subjected to the same amount of scrutiny that the rest of the code is.
-
-
 Disallow Dynamic Invocation
 ...........................
 
@@ -162,9 +146,6 @@ Forbids native methods as these provide the user access into operating system fu
 network requests, general hardware interaction, threading, *etc.* These all constitute sources of non-determinism, and
 allowing such code to be called arbitrarily from the JVM would require deterministic guarantees on the native machine
 code level. This falls out of scope for the DJVM.
-
-Java runtime classes that call into native code and that are needed from within the sandbox environment, can be
-whitelisted explicitly.
 
 
 Disallow Finalizer Methods
@@ -287,9 +268,8 @@ The loaded classes are further rewritten in two ways:
 Disable Synchronised Methods and Blocks
 .......................................
 
-Since Java's multi-threading API has been excluded from the whitelist, synchronised methods and code blocks have little
-use in sandboxed code. Consequently, we log informational messages about occurrences of this in your sandboxed code and
-automatically transform them into ordinary methods and code blocks instead.
+The DJVM doesn't support multi-threading and so synchronised methods and code blocks have little
+use in sandboxed code. Consequently, we automatically transform them into ordinary methods and code blocks instead.
 
 
 Future Work
@@ -298,9 +278,6 @@ Future Work
 Further work is planned:
 
  * To enable controlled use of reflection APIs.
-
- * Strip out the dependency on the extensive whitelist of underlying Java
-   runtime classes.
 
  * Currently, dynamic invocation is disallowed. Allow specific lambda and
    string concatenation meta-factories used by Java code itself.
@@ -319,30 +296,39 @@ Further work is planned:
 Command-line Tool
 ~~~~~~~~~~~~~~~~~
 
-Open your terminal and navigate to the ``djvm`` folder. Then issue the following command:
+You can download and unpack ``corda-djvm-cli.zip`` from the R3 Artifactory.
+Alternatively, you can build it yourself from the source as follows.
 
-::
+Open your terminial and clone the DJVM repository from GitHub:
 
-  djvm > ./shell/install
+:: shell
+
+  $ git clone https://github.com/corda/djvm
+
+Navigate to this newly created ``djvm`` directory, and then issue the following command:
+
+:: shell
+
+  $ djvm/shell/install
 
 
 This will build the DJVM tool and install a shortcut on Bash-enabled systems. It will also generate a Bash completion
 file and store it in the ``shell`` folder. This file can be sourced from your Bash initialisation script.
 
-::
+:: shell
 
-  djvm > cd ~
-  ~ > djvm
+  $ cd ~
+  $ djvm
 
 Now, you can create a new Java file from a skeleton that ``djvm`` provides, compile the file, and consequently run it
 by issuing the following commands:
 
-::
+:: shell
 
-  ~ > djvm new Hello
-  ~ > vim tmp/net/corda/sandbox/Hello.java
-  ~ > djvm build Hello
-  ~ > djvm run Hello
+  $ djvm new Hello
+  $ vim tmp/net/corda/sandbox/Hello.java
+  $ djvm build Hello
+  $ djvm run Hello
 
 This run will produce some output similar to this:
 
@@ -360,17 +346,17 @@ This run will produce some output similar to this:
 
 The output should be pretty self-explanatory, but just to summarise:
 
- * It prints out the return value from the ``SandboxedRunnable<Object, Object>.run()`` method implemented in
+ * It prints out the return value from the ``Function<Object, Object>.apply()`` method implemented in
    ``net.corda.sandbox.Hello``.
 
  * It also prints out the aggregated costs for allocations, invocations, jumps and throws.
 
 Other commands to be aware of are:
 
- * ``djvm check`` which allows you to perform the up-front static analysis without running the code.
+ * ``djvm check`` which allows you to perform some up-front static analysis without running the code. However, be aware
+   that the DJVM also transforms some non-deterministic operations into ``RuleViolationError`` exceptions. A successful
+   ``check`` therefore does *not* guarantee that the code will behave correctly at runtime.
 
  * ``djvm inspect`` which allows you to inspect what byte code modifications will be applied to a class.
 
  * ``djvm show`` which displays the transformed byte code of a class, *i.e.*, the end result and not the difference.
-
- * ``djvm whitelist`` which displays the content of the whitelist in use.

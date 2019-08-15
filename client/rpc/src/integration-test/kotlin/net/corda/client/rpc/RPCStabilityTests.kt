@@ -9,9 +9,10 @@ import net.corda.core.messaging.RPCOps
 import net.corda.core.serialization.SerializationDefaults
 import net.corda.core.serialization.serialize
 import net.corda.core.utilities.*
-import net.corda.node.services.messaging.RPCServerConfiguration
+import net.corda.node.services.rpc.RPCServerConfiguration
 import net.corda.nodeapi.RPCApi
-import net.corda.nodeapi.eventually
+import net.corda.testing.common.internal.eventually
+import net.corda.testing.common.internal.succeeds
 import net.corda.testing.core.SerializationEnvironmentRule
 import net.corda.testing.driver.internal.incrementalPortAllocation
 import net.corda.testing.internal.testThreadFactory
@@ -20,6 +21,7 @@ import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration
 import org.apache.activemq.artemis.api.core.SimpleString
 import org.junit.After
 import org.junit.Assert.*
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import rx.Observable
@@ -39,7 +41,7 @@ class RPCStabilityTests {
     val testSerialization = SerializationEnvironmentRule(true)
 
     private val pool = Executors.newFixedThreadPool(10, testThreadFactory())
-    private val portAllocation = incrementalPortAllocation(10000)
+    private val portAllocation = incrementalPortAllocation()
 
     @After
     fun shutdown() {
@@ -67,6 +69,7 @@ class RPCStabilityTests {
     }
 
     @Test
+    @Ignore("Ignored as it became increasingly flaky. CORDA-3098")
     fun `client and server dont leak threads`() {
         fun startAndStop() {
             rpcDriver {
@@ -99,6 +102,7 @@ class RPCStabilityTests {
     }
 
     @Test
+    @Ignore("Ignored as it became increasingly flaky. CORDA-3098")
     fun `client doesnt leak threads when it fails to start`() {
         fun startAndStop() {
             rpcDriver {
@@ -249,7 +253,9 @@ class RPCStabilityTests {
             assertEquals("pong", client.ping())
             serverFollower.shutdown()
             startRpcServer<ReconnectOps>(ops = ops, customPort = serverPort).getOrThrow()
-            val response = eventually<RPCException, String>(10.seconds) { client.ping() }
+            val response = eventually {
+                succeeds { client.ping() }
+            }
             assertEquals("pong", response)
             clientFollower.shutdown() // Driver would do this after the new server, causing hang.
         }
@@ -316,13 +322,13 @@ class RPCStabilityTests {
                      })
 
             serverFollower.shutdown()
-            Thread.sleep(100)
 
-            assertTrue(terminateHandlerCalled)
-            assertTrue(errorHandlerCalled)
-            assertEquals("Connection failure detected.", exceptionMessage)
-            assertTrue(subscription.isUnsubscribed)
-
+            eventually {
+                assertTrue(terminateHandlerCalled)
+                assertTrue(errorHandlerCalled)
+                assertEquals("Connection failure detected.", exceptionMessage)
+                assertTrue(subscription.isUnsubscribed)
+            }
             clientFollower.shutdown() // Driver would do this after the new server, causing hang.
         }
     }
@@ -495,6 +501,7 @@ class RPCStabilityTests {
     }
 
     @Test
+    @Ignore // TODO: This is ignored because Artemis slow consumers are broken.  I'm not deleting it in case we can get the feature fixed.
     fun `slow consumers are kicked`() {
         rpcDriver {
             val server = startRpcServer(maxBufferedBytesPerClient = 10 * 1024 * 1024, ops = SlowConsumerRPCOpsImpl()).get()
@@ -505,7 +512,7 @@ class RPCStabilityTests {
             session.createTemporaryQueue(myQueue, ActiveMQDefaultConfiguration.getDefaultRoutingType(), myQueue)
             val consumer = session.createConsumer(myQueue, null, -1, -1, false)
             consumer.setMessageHandler {
-                Thread.sleep(50) // 5x slower than the server producer
+                Thread.sleep(5000) // Needs to be slower than one per second to get kicked.
                 it.acknowledge()
             }
             val producer = session.createProducer(RPCApi.RPC_SERVER_QUEUE_NAME)
@@ -517,7 +524,7 @@ class RPCStabilityTests {
             val request = RPCApi.ClientToServer.RpcRequest(
                     clientAddress = SimpleString(myQueue),
                     methodName = SlowConsumerRPCOps::streamAtInterval.name,
-                    serialisedArguments = listOf(10.millis, 123456).serialize(context = SerializationDefaults.RPC_SERVER_CONTEXT),
+                    serialisedArguments = listOf(100.millis, 1234).serialize(context = SerializationDefaults.RPC_SERVER_CONTEXT),
                     replyId = Trace.InvocationId.newInstance(),
                     sessionId = Trace.SessionId.newInstance()
             )
@@ -526,7 +533,7 @@ class RPCStabilityTests {
             producer.send(message)
             session.commit()
 
-            // We are consuming slower than the server is producing, so we should be kicked after a while
+            // We are consuming slower than the server is producing, so we should be kicked after a while if slow consumers are enabled.
             pollUntilClientNumber(server, 0)
         }
     }

@@ -154,7 +154,7 @@ simple: it's given a class representing the transaction, and if the function ret
 acceptable. If it throws an exception, the transaction is rejected.
 
 Each transaction can have multiple input and output states of different types. The set of contracts to run is decided
-by taking the code references inside each state. Each contract is run only once. As an example, a contract that includes
+by taking the code references inside each state. Each contract is run only once. As an example, a transaction that includes
 2 cash states and 1 commercial paper state as input, and has as output 1 cash state and 1 commercial paper state, will
 run two contracts one time each: Cash and CommercialPaper.
 
@@ -346,7 +346,7 @@ the owner.
 
 To calculate how much cash is moving, we use the ``sumCashBy`` utility function. Again, this is an extension function,
 so in Kotlin code it appears as if it was a method on the ``List<Cash.State>`` type even though JDK provides no such
-method. In Java we see its true nature: it is actually a static method named ``CashKt.sumCashBy``. This method simply
+method. In Java we see its true nature: it is actually a static method named ``StateSumming.sumCashBy``. This method simply
 returns an ``Amount`` object containing the sum of all the cash states in the transaction outputs that are owned by
 that given public key, or throws an exception if there were no such states *or* if there were different currencies
 represented in the outputs! So we can see that this contract imposes a limitation on the structure of a redemption
@@ -513,7 +513,7 @@ from the ledger). Finally, we add a Redeem command that should be signed by the 
 
 A ``TransactionBuilder`` is not by itself ready to be used anywhere, so first, we must convert it to something that
 is recognised by the network. The most important next step is for the participating entities to sign it. Typically,
-an initiating flow will create an initial partially signed ``SignedTransaction`` by calling the ``serviceHub.toSignedTransaction`` method.
+an initiating flow will create an initial partially signed ``SignedTransaction`` by calling the ``ServiceHub.signInitialTransaction`` method.
 Then the frozen ``SignedTransaction`` can be passed to other nodes by the flow, these can sign using ``serviceHub.createSignature`` and distribute.
 The ``CollectSignaturesFlow`` provides a generic implementation of this process that can be used as a ``subFlow`` .
 

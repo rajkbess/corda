@@ -3,6 +3,7 @@ package net.corda.core.flows
 import co.paralleluniverse.fibers.Suspendable
 import co.paralleluniverse.strands.Strand
 import net.corda.core.CordaInternal
+import net.corda.core.DeleteForDJVM
 import net.corda.core.contracts.StateRef
 import net.corda.core.crypto.SecureHash
 import net.corda.core.identity.Party
@@ -56,10 +57,12 @@ import java.util.*
  * relevant database transactions*. Only set this option to true if you know what you're doing.
  */
 @Suppress("DEPRECATION", "DeprecatedCallableAddReplaceWith")
+@DeleteForDJVM
 abstract class FlowLogic<out T> {
     /** This is where you should log things to. */
     val logger: Logger get() = stateMachine.logger
 
+    @DeleteForDJVM
     companion object {
         /**
          * Return the outermost [FlowLogic] instance, or null if not in a flow.
@@ -95,6 +98,8 @@ abstract class FlowLogic<out T> {
                 fiber.suspend(request, maySkipCheckpoint = maySkipCheckpoint)
             }
         }
+
+        private val DEFAULT_TRACKER = { ProgressTracker() }
     }
 
     /**
@@ -109,6 +114,13 @@ abstract class FlowLogic<out T> {
      * access this lazily or from inside [call].
      */
     val serviceHub: ServiceHub get() = stateMachine.serviceHub
+
+    /**
+     * Creates a communication session with [destination]. Subsequently you may send/receive using this session object. How the messaging
+     * is routed depends on the [Destination] type, including whether this call does any initial communication.
+     */
+    @Suspendable
+    fun initiateFlow(destination: Destination): FlowSession = stateMachine.initiateFlow(destination)
 
     /**
      * Creates a communication session with [party]. Subsequently you may send/receive using this session object. Note
@@ -247,7 +259,6 @@ abstract class FlowLogic<out T> {
         return sendAndReceiveWithRetry(R::class.java, payload)
     }
 
-
     /** Suspends until a message has been received for each session in the specified [sessions].
      *
      * Consider [receiveAll(receiveType: Class<R>, sessions: List<FlowSession>): List<UntrustworthyData<R>>] when the same type is expected from all sessions.
@@ -308,8 +319,6 @@ abstract class FlowLogic<out T> {
         logger.debug { "Calling subflow: $subLogic" }
         val result = stateMachine.subFlow(subLogic)
         logger.debug { "Subflow finished with result ${result.toString().abbreviate(300)}" }
-        // It's easy to forget this when writing flows so we just step it to the DONE state when it completes.
-        subLogic.progressTracker?.currentStep = ProgressTracker.DONE
         return result
     }
 
@@ -347,7 +356,7 @@ abstract class FlowLogic<out T> {
      * Note that this has to return a tracker before the flow is invoked. You can't change your mind half way
      * through.
      */
-    open val progressTracker: ProgressTracker? = ProgressTracker.DEFAULT_TRACKER()
+    open val progressTracker: ProgressTracker? = DEFAULT_TRACKER()
 
     /**
      * This is where you fill out your business logic.
@@ -465,7 +474,7 @@ abstract class FlowLogic<out T> {
         val theirs = subLogic.progressTracker
         if (ours != null && theirs != null && ours != theirs) {
             if (ours.currentStep == ProgressTracker.UNSTARTED) {
-                logger.warn("ProgressTracker has not been started")
+                logger.debug { "Initializing the progress tracker for flow: ${this::class.java.name}." }
                 ours.nextStep()
             }
             ours.setChildProgressTracker(ours.currentStep, theirs)

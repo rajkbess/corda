@@ -1,10 +1,11 @@
+.. highlight:: kotlin
+.. raw:: html
+
+   <script type="text/javascript" src="_static/jquery.js"></script>
+   <script type="text/javascript" src="_static/codesets.js"></script>
+
 API: Identity
 =============
-
-.. note:: Before reading this page, you should be familiar with the key concepts of :doc:`key-concepts-identity`.
-
-.. warning:: The ``confidential-identities`` module is still not stabilised, so this API may change in future releases.
-   See :doc:`corda-api`.
 
 .. contents::
 
@@ -37,8 +38,14 @@ basis.
 The ``PartyAndCertificate`` class is also used by the network map service to represent well-known identities, with the
 certificate path proving the certificate was issued by the doorman service.
 
+.. _confidential_identities_ref:
+
 Confidential identities
 -----------------------
+
+.. warning:: The ``confidential-identities`` module is still not stabilised, so this API may change in future releases.
+   See :doc:`corda-api`.
+
 Confidential identities are key pairs where the corresponding X.509 certificate (and path) are not made public, so that
 parties who are not involved in the transaction cannot identify the owner. They are owned by a well-known identity,
 which must sign the X.509 certificate. Before constructing a new transaction the involved parties must generate and
@@ -66,7 +73,7 @@ You can see an example of using ``SwapIdentitiesFlow`` in ``TwoPartyDealFlow.kt`
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyDealFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyDealFlow.kt
         :language: kotlin
         :start-after: DOCSTART 2
         :end-before: DOCEND 2
@@ -101,7 +108,7 @@ process. You can see an example of its use in ``TwoPartyTradeFlow.kt``.
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
         :language: kotlin
         :start-after: DOCSTART 6
         :end-before: DOCEND 6
@@ -129,7 +136,7 @@ synchronization process:
 
 .. container:: codeset
 
-    .. literalinclude:: ../../finance/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
+    .. literalinclude:: ../../finance/workflows/src/main/kotlin/net/corda/finance/flows/TwoPartyTradeFlow.kt
         :language: kotlin
         :start-after: DOCSTART 07
         :end-before: DOCEND 07

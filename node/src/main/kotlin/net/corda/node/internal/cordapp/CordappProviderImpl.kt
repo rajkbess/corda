@@ -1,7 +1,6 @@
 package net.corda.node.internal.cordapp
 
 import com.google.common.collect.HashBiMap
-import net.corda.core.contracts.ContractAttachment
 import net.corda.core.contracts.ContractClassName
 import net.corda.core.cordapp.Cordapp
 import net.corda.core.cordapp.CordappContext
@@ -9,12 +8,11 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowLogic
 import net.corda.core.internal.DEPLOYED_CORDAPP_UPLOADER
 import net.corda.core.internal.cordapp.CordappImpl
-import net.corda.core.internal.createCordappContext
 import net.corda.core.node.services.AttachmentId
 import net.corda.core.node.services.AttachmentStorage
 import net.corda.core.serialization.SingletonSerializeAsToken
 import net.corda.core.utilities.contextLogger
-import net.corda.node.cordapp.CordappLoader
+import net.corda.nodeapi.internal.cordapp.CordappLoader
 import net.corda.node.services.persistence.AttachmentStorageInternal
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
@@ -22,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * Cordapp provider and store. For querying CorDapps for their attachment and vice versa.
  */
-open class CordappProviderImpl(private val cordappLoader: CordappLoader,
+open class CordappProviderImpl(val cordappLoader: CordappLoader,
                                private val cordappConfigProvider: CordappConfigProvider,
                                private val attachmentStorage: AttachmentStorage) : SingletonSerializeAsToken(), CordappProviderInternal {
     companion object {
@@ -37,30 +35,14 @@ open class CordappProviderImpl(private val cordappLoader: CordappLoader,
      */
     override val cordapps: List<CordappImpl> get() = cordappLoader.cordapps
 
-    fun start(whitelistedContractImplementations: Map<String, List<AttachmentId>>) {
+    fun start() {
         cordappAttachments.putAll(loadContractsIntoAttachmentStore())
-        verifyInstalledCordapps(whitelistedContractImplementations)
+        verifyInstalledCordapps()
     }
 
-    private fun verifyInstalledCordapps(whitelistedContractImplementations: Map<String, List<AttachmentId>>) {
+    private fun verifyInstalledCordapps() {
         // This will invoke the lazy flowCordappMap property, thus triggering the MultipleCordappsForFlow check.
         cordappLoader.flowCordappMap
-
-        if (whitelistedContractImplementations.isEmpty()) {
-            log.warn("The network parameters don't specify any whitelisted contract implementations. Please contact your zone operator. See https://docs.corda.net/network-map.html")
-            return
-        }
-
-        // Verify that the installed contract classes correspond with the whitelist hash
-        // And warn if node is not using latest CorDapp
-        cordappAttachments.keys.map(attachmentStorage::openAttachment).mapNotNull { it as? ContractAttachment }.forEach { attch ->
-            (attch.allContracts intersect whitelistedContractImplementations.keys).forEach { contractClassName ->
-                when {
-                    attch.id !in whitelistedContractImplementations[contractClassName]!! -> log.error("Contract $contractClassName found in attachment ${attch.id} is not whitelisted in the network parameters. If this is a production node contact your zone operator. See https://docs.corda.net/network-map.html")
-                    attch.id != whitelistedContractImplementations[contractClassName]!!.last() -> log.warn("You are not using the latest CorDapp version for contract: $contractClassName. Please contact your zone operator.")
-                }
-            }
-        }
     }
 
     override fun getAppContext(): CordappContext {
@@ -112,7 +94,7 @@ open class CordappProviderImpl(private val cordappLoader: CordappLoader,
      */
     fun getAppContext(cordapp: Cordapp): CordappContext {
         return contextCache.computeIfAbsent(cordapp) {
-            createCordappContext(
+            CordappContext.create(
                     cordapp,
                     getCordappAttachmentId(cordapp),
                     cordappLoader.appClassLoader,

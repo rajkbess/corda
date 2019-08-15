@@ -47,7 +47,7 @@ class Vault<out T : ContractState>(val states: Iterable<StateAndRef<T>>) {
      * other transactions observed, then the changes are observed "net" of those.
      */
     @CordaSerializable
-    data class Update<U : ContractState>(
+    data class Update<U : ContractState> @JvmOverloads constructor(
             val consumed: Set<StateAndRef<U>>,
             val produced: Set<StateAndRef<U>>,
             val flowId: UUID? = null,
@@ -56,10 +56,11 @@ class Vault<out T : ContractState>(val states: Iterable<StateAndRef<T>>) {
              * Notary change transactions only modify the notary field on states, and potentially need to be handled
              * differently.
              */
-            val type: UpdateType = UpdateType.GENERAL
+            val type: UpdateType = UpdateType.GENERAL,
+            val references: Set<StateAndRef<U>> = emptySet()
     ) {
         /** Checks whether the update contains a state of the specified type. */
-        inline fun <reified T : ContractState> containsType() = consumed.any { it.state.data is T } || produced.any { it.state.data is T }
+        inline fun <reified T : ContractState> containsType() = consumed.any { it.state.data is T } || produced.any { it.state.data is T } || references.any { it.state.data is T }
 
         /** Checks whether the update contains a state of the specified type and state status */
         fun <T : ContractState> containsType(clazz: Class<T>, status: StateStatus) =
@@ -83,7 +84,7 @@ class Vault<out T : ContractState>(val states: Iterable<StateAndRef<T>>) {
             val combinedConsumed = consumed + (rhs.consumed - produced)
             // The ordering below matters to preserve ordering of consumed/produced Sets when they are insertion order dependent implementations.
             val combinedProduced = produced.filter { it !in rhs.consumed }.toSet() + rhs.produced
-            return copy(consumed = combinedConsumed, produced = combinedProduced)
+            return copy(consumed = combinedConsumed, produced = combinedProduced, references = references + rhs.references)
         }
 
         override fun toString(): String {
@@ -99,8 +100,23 @@ class Vault<out T : ContractState>(val states: Iterable<StateAndRef<T>>) {
             produced.forEach {
                 sb.appendln("${it.ref}: ${it.state}")
             }
+            sb.appendln("References:")
+            references.forEach {
+                sb.appendln("${it.ref}: ${it.state}")
+            }
             return sb.toString()
         }
+
+        /** Additional copy method to maintain backwards compatibility. */
+        fun copy(
+                consumed: Set<StateAndRef<U>>,
+                produced: Set<StateAndRef<U>>,
+                flowId: UUID? = null,
+                type: UpdateType = UpdateType.GENERAL
+        ): Update<U> {
+            return Update(consumed, produced, flowId, type, references)
+        }
+
     }
 
     @CordaSerializable
@@ -232,9 +248,9 @@ class Vault<out T : ContractState>(val states: Iterable<StateAndRef<T>>) {
 
     companion object {
         @Deprecated("No longer used. The vault does not emit empty updates")
-        val NoUpdate = Update(emptySet(), emptySet(), type = Vault.UpdateType.GENERAL)
+        val NoUpdate = Update(emptySet(), emptySet(), type = Vault.UpdateType.GENERAL, references = emptySet())
         @Deprecated("No longer used. The vault does not emit empty updates")
-        val NoNotaryUpdate = Vault.Update(emptySet(), emptySet(), type = Vault.UpdateType.NOTARY_CHANGE)
+        val NoNotaryUpdate = Vault.Update(emptySet(), emptySet(), type = Vault.UpdateType.NOTARY_CHANGE, references = emptySet())
     }
 }
 
@@ -284,7 +300,7 @@ interface VaultService {
         val result = trackBy<ContractState>(query)
         val snapshot = result.snapshot.states
         return if (snapshot.isNotEmpty()) {
-            doneFuture(Vault.Update(consumed = setOf(snapshot.single()), produced = emptySet()))
+            doneFuture(Vault.Update(consumed = setOf(snapshot.single()), produced = emptySet(), references = emptySet()))
         } else {
             result.updates.toFuture()
         }
@@ -390,8 +406,11 @@ interface VaultService {
      *
      * @throws VaultQueryException if the query cannot be executed for any reason.
      *
-     * Notes: the snapshot part of the query adheres to the same behaviour as the [queryBy] function.
-     *        the [QueryCriteria] applies to both snapshot and deltas (streaming updates).
+     * Notes:
+     *    - The snapshot part of the query adheres to the same behaviour as the [queryBy] function.
+     *    - The update part of the query currently only supports query criteria filtering by contract
+     *      type(s) and state status(es). CID-731 <https://r3-cev.atlassian.net/browse/CID-731> proposes
+     *      adding the complete set of [QueryCriteria] filtering.
      */
     @Throws(VaultQueryException::class)
     fun <T : ContractState> _trackBy(criteria: QueryCriteria,
@@ -408,6 +427,10 @@ interface VaultService {
 
     fun <T : ContractState> queryBy(contractStateType: Class<out T>, criteria: QueryCriteria): Vault.Page<T> {
         return _queryBy(criteria, PageSpecification(), Sort(emptySet()), contractStateType)
+    }
+
+    fun <T : ContractState> queryBy(contractStateType: Class<out T>, paging: PageSpecification): Vault.Page<T> {
+        return _queryBy(QueryCriteria.VaultQueryCriteria(), paging, Sort(emptySet()), contractStateType)
     }
 
     fun <T : ContractState> queryBy(contractStateType: Class<out T>, criteria: QueryCriteria, paging: PageSpecification): Vault.Page<T> {
@@ -428,6 +451,10 @@ interface VaultService {
 
     fun <T : ContractState> trackBy(contractStateType: Class<out T>, criteria: QueryCriteria): DataFeed<Vault.Page<T>, Vault.Update<T>> {
         return _trackBy(criteria, PageSpecification(), Sort(emptySet()), contractStateType)
+    }
+
+    fun <T : ContractState> trackBy(contractStateType: Class<out T>, paging: PageSpecification): DataFeed<Vault.Page<T>, Vault.Update<T>> {
+        return _trackBy(QueryCriteria.VaultQueryCriteria(), paging, Sort(emptySet()), contractStateType)
     }
 
     fun <T : ContractState> trackBy(contractStateType: Class<out T>, criteria: QueryCriteria, paging: PageSpecification): DataFeed<Vault.Page<T>, Vault.Update<T>> {
@@ -451,6 +478,10 @@ inline fun <reified T : ContractState> VaultService.queryBy(criteria: QueryCrite
     return _queryBy(criteria, PageSpecification(), Sort(emptySet()), T::class.java)
 }
 
+inline fun <reified T : ContractState> VaultService.queryBy(paging: PageSpecification): Vault.Page<T> {
+    return _queryBy(QueryCriteria.VaultQueryCriteria(), paging, Sort(emptySet()), T::class.java)
+}
+
 inline fun <reified T : ContractState> VaultService.queryBy(criteria: QueryCriteria, paging: PageSpecification): Vault.Page<T> {
     return _queryBy(criteria, paging, Sort(emptySet()), T::class.java)
 }
@@ -465,6 +496,10 @@ inline fun <reified T : ContractState> VaultService.queryBy(criteria: QueryCrite
 
 inline fun <reified T : ContractState> VaultService.trackBy(): DataFeed<Vault.Page<T>, Vault.Update<T>> {
     return _trackBy(QueryCriteria.VaultQueryCriteria(), PageSpecification(), Sort(emptySet()), T::class.java)
+}
+
+inline fun <reified T : ContractState> VaultService.trackBy(paging: PageSpecification): DataFeed<Vault.Page<T>, Vault.Update<T>> {
+    return _trackBy(QueryCriteria.VaultQueryCriteria(), paging, Sort(emptySet()), T::class.java)
 }
 
 inline fun <reified T : ContractState> VaultService.trackBy(criteria: QueryCriteria): DataFeed<Vault.Page<T>, Vault.Update<T>> {
@@ -483,7 +518,9 @@ inline fun <reified T : ContractState> VaultService.trackBy(criteria: QueryCrite
     return _trackBy(criteria, paging, sorting, T::class.java)
 }
 
-class VaultQueryException(description: String) : FlowException(description)
+class VaultQueryException(description: String, cause: Exception? = null) : FlowException(description, cause) {
+    constructor(description: String) : this(description, null)
+}
 
 class StatesNotAvailableException(override val message: String?, override val cause: Throwable? = null) : FlowException(message, cause) {
     override fun toString() = "Soft locking error: $message"

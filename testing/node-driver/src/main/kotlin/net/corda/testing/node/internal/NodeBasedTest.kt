@@ -1,6 +1,5 @@
 package net.corda.testing.node.internal
 
-import com.typesafe.config.ConfigValueFactory
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.internal.PLATFORM_VERSION
@@ -25,7 +24,7 @@ import net.corda.testing.core.SerializationEnvironmentRule
 import net.corda.testing.driver.internal.incrementalPortAllocation
 import net.corda.testing.internal.testThreadFactory
 import net.corda.testing.node.User
-import org.apache.commons.lang.SystemUtils
+import org.apache.commons.lang3.SystemUtils
 import org.apache.logging.log4j.Level
 import org.junit.After
 import org.junit.Before
@@ -57,7 +56,7 @@ constructor(private val cordappPackages: List<String> = emptyList(), private val
     private lateinit var defaultNetworkParameters: NetworkParametersCopier
     protected val notaryNodes = mutableListOf<NodeWithInfo>()
     private val nodes = mutableListOf<NodeWithInfo>()
-    private val portAllocation = incrementalPortAllocation(10000)
+    private val portAllocation = incrementalPortAllocation()
 
     init {
         System.setProperty("consoleLogLevel", Level.DEBUG.name().toLowerCase())
@@ -121,16 +120,10 @@ constructor(private val cordappPackages: List<String> = emptyList(), private val
                 ) + configOverrides
         )
 
-        val cordapps = cordappsForPackages(getCallerPackage(NodeBasedTest::class)?.let { cordappPackages + it }
-                ?: cordappPackages)
+        val customCordapps = cordappsForPackages(getCallerPackage(NodeBasedTest::class)?.let { cordappPackages + it } ?: cordappPackages)
+        TestCordappInternal.installCordapps(baseDirectory, emptySet(), customCordapps)
 
-        val existingCorDappDirectoriesOption = if (config.hasPath(NodeConfiguration.cordappDirectoriesKey)) config.getStringList(NodeConfiguration.cordappDirectoriesKey) else emptyList()
-
-        val cordappDirectories = existingCorDappDirectoriesOption + cordapps.map { TestCordappDirectories.getJarDirectory(it).toString() }
-
-        val specificConfig = config.withValue(NodeConfiguration.cordappDirectoriesKey, ConfigValueFactory.fromIterable(cordappDirectories.toSet()))
-
-        val parsedConfig = specificConfig.parseAsNodeConfiguration().value()
+        val parsedConfig = config.parseAsNodeConfiguration().value()
 
         defaultNetworkParameters.install(baseDirectory)
         val node = InProcessNode(parsedConfig, MOCK_VERSION_INFO.copy(platformVersion = platformVersion), flowManager = flowManager)

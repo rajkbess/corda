@@ -16,6 +16,7 @@ import net.corda.core.utilities.ProgressTracker
 import net.corda.core.utilities.getOrThrow
 import net.corda.core.utilities.unwrap
 import net.corda.node.services.Permissions
+import net.corda.node.services.statemachine.FlowTimeoutException
 import net.corda.testing.core.ALICE_NAME
 import net.corda.testing.core.BOB_NAME
 import net.corda.testing.core.singleIdentity
@@ -28,8 +29,13 @@ import org.junit.Before
 import org.junit.Test
 import java.lang.management.ManagementFactory
 import java.sql.SQLException
+import java.sql.SQLTransientConnectionException
+import java.time.Duration
+import java.time.temporal.ChronoUnit
 import java.util.*
+import java.util.concurrent.TimeoutException
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 
 class FlowRetryTest {
@@ -37,6 +43,9 @@ class FlowRetryTest {
     fun resetCounters() {
         InitiatorFlow.seen.clear()
         InitiatedFlow.seen.clear()
+        TransientConnectionFailureFlow.retryCount = -1
+        WrappedTransientConnectionFailureFlow.retryCount = -1
+        GeneralExternalFailureFlow.retryCount = -1
     }
 
     @Test
@@ -110,14 +119,69 @@ class FlowRetryTest {
             }
         }
     }
+
+    @Test
+    fun `SQLTransientConnectionExceptions thrown by hikari are retried 3 times and then kept in the checkpoints table`() {
+        val user = User("mark", "dadada", setOf(Permissions.all()))
+        driver(DriverParameters(isDebug = true, startNodesInProcess = isQuasarAgentSpecified())) {
+
+            val nodeAHandle = startNode(providedName = ALICE_NAME, rpcUsers = listOf(user)).getOrThrow()
+            val nodeBHandle = startNode(providedName = BOB_NAME, rpcUsers = listOf(user)).getOrThrow()
+            CordaRPCClient(nodeAHandle.rpcAddress).start(user.username, user.password).use {
+                assertFailsWith<TimeoutException> {
+                    it.proxy.startFlow(::TransientConnectionFailureFlow, nodeBHandle.nodeInfo.singleIdentity())
+                            .returnValue.getOrThrow(Duration.of(10, ChronoUnit.SECONDS))
+                }
+                assertEquals(3, TransientConnectionFailureFlow.retryCount)
+                // 1 for the errored flow kept for observation and another for GetNumberOfCheckpointsFlow
+                assertEquals(2, it.proxy.startFlow(::GetNumberOfCheckpointsFlow).returnValue.get())
+            }
+        }
+    }
+
+    @Test
+    fun `Specific exception still detected even if it is nested inside another exception`() {
+        val user = User("mark", "dadada", setOf(Permissions.all()))
+        driver(DriverParameters(isDebug = true, startNodesInProcess = isQuasarAgentSpecified())) {
+
+            val nodeAHandle = startNode(providedName = ALICE_NAME, rpcUsers = listOf(user)).getOrThrow()
+            val nodeBHandle = startNode(providedName = BOB_NAME, rpcUsers = listOf(user)).getOrThrow()
+            CordaRPCClient(nodeAHandle.rpcAddress).start(user.username, user.password).use {
+                assertFailsWith<TimeoutException> {
+                    it.proxy.startFlow(::WrappedTransientConnectionFailureFlow, nodeBHandle.nodeInfo.singleIdentity())
+                            .returnValue.getOrThrow(Duration.of(10, ChronoUnit.SECONDS))
+                }
+                assertEquals(3, WrappedTransientConnectionFailureFlow.retryCount)
+                // 1 for the errored flow kept for observation and another for GetNumberOfCheckpointsFlow
+                assertEquals(2, it.proxy.startFlow(::GetNumberOfCheckpointsFlow).returnValue.get())
+            }
+        }
+    }
+
+    @Test
+    fun `General external exceptions are not retried and propagate`() {
+        val user = User("mark", "dadada", setOf(Permissions.all()))
+        driver(DriverParameters(isDebug = true, startNodesInProcess = isQuasarAgentSpecified())) {
+
+            val nodeAHandle = startNode(providedName = ALICE_NAME, rpcUsers = listOf(user)).getOrThrow()
+            val nodeBHandle = startNode(providedName = BOB_NAME, rpcUsers = listOf(user)).getOrThrow()
+
+            CordaRPCClient(nodeAHandle.rpcAddress).start(user.username, user.password).use {
+                assertFailsWith<CordaRuntimeException> {
+                    it.proxy.startFlow(::GeneralExternalFailureFlow, nodeBHandle.nodeInfo.singleIdentity()).returnValue.getOrThrow()
+                }
+                assertEquals(0, GeneralExternalFailureFlow.retryCount)
+                // 1 for the errored flow kept for observation and another for GetNumberOfCheckpointsFlow
+                assertEquals(1, it.proxy.startFlow(::GetNumberOfCheckpointsFlow).returnValue.get())
+            }
+        }
+    }
 }
 
 fun isQuasarAgentSpecified(): Boolean {
     val jvmArgs = ManagementFactory.getRuntimeMXBean().inputArguments
     return jvmArgs.any { it.startsWith("-javaagent:") && it.contains("quasar") }
 }
-
-class ExceptionToCauseRetry : SQLException("deadlock")
 
 class ExceptionToCauseFiniteRetry : ConstraintViolationException("Faked violation", SQLException("Fake"), "Fake name")
 
@@ -135,7 +199,7 @@ class InitiatorFlow(private val sessionsCount: Int, private val iterationsCount:
             val visited = Visited(sessionNum, iterationNum, step)
             if (visited !in seen) {
                 seen += visited
-                throw ExceptionToCauseRetry()
+                throw FlowTimeoutException()
             }
         }
     }
@@ -186,7 +250,7 @@ class InitiatedFlow(val session: FlowSession) : FlowLogic<Any>() {
             val visited = Visited(sessionNum, iterationNum, step)
             if (visited !in seen) {
                 seen += visited
-                throw ExceptionToCauseRetry()
+                throw FlowTimeoutException()
             }
         }
     }
@@ -285,5 +349,95 @@ class ThrowingFlow() : FlowLogic<String>(), IdempotentFlow {
     override fun call(): String {
         progressTracker.currentStep = FIRST_STEP
         return "Result"
+    }
+}
+
+@StartableByRPC
+@InitiatingFlow
+class TransientConnectionFailureFlow(private val party: Party) : FlowLogic<Unit>() {
+    companion object {
+        // start negative due to where it is incremented
+        var retryCount = -1
+    }
+
+    @Suspendable
+    override fun call() {
+        initiateFlow(party).send("hello there")
+        // checkpoint will restart the flow after the send
+        retryCount += 1
+        throw SQLTransientConnectionException("Connection is not available")
+    }
+}
+
+@InitiatedBy(TransientConnectionFailureFlow::class)
+class TransientConnectionFailureResponder(private val session: FlowSession) : FlowLogic<Unit>() {
+
+    @Suspendable
+    override fun call() {
+        session.receive<String>().unwrap { it }
+    }
+}
+
+@StartableByRPC
+@InitiatingFlow
+class WrappedTransientConnectionFailureFlow(private val party: Party) : FlowLogic<Unit>() {
+    companion object {
+        // start negative due to where it is incremented
+        var retryCount = -1
+    }
+
+    @Suspendable
+    override fun call() {
+        initiateFlow(party).send("hello there")
+        // checkpoint will restart the flow after the send
+        retryCount += 1
+        throw IllegalStateException("wrapped error message", IllegalStateException("another layer deep", SQLTransientConnectionException("Connection is not available")/*.fillInStackTrace()*/))
+    }
+}
+
+@InitiatedBy(WrappedTransientConnectionFailureFlow::class)
+class WrappedTransientConnectionFailureResponder(private val session: FlowSession) : FlowLogic<Unit>() {
+
+    @Suspendable
+    override fun call() {
+        session.receive<String>().unwrap { it }
+    }
+}
+
+@StartableByRPC
+@InitiatingFlow
+class GeneralExternalFailureFlow(private val party: Party) : FlowLogic<Unit>() {
+    companion object {
+        // start negative due to where it is incremented
+        var retryCount = -1
+    }
+
+    @Suspendable
+    override fun call() {
+        initiateFlow(party).send("hello there")
+        // checkpoint will restart the flow after the send
+        retryCount += 1
+        throw IllegalStateException("Some user general exception")
+    }
+}
+
+@InitiatedBy(GeneralExternalFailureFlow::class)
+class GeneralExternalFailureResponder(private val session: FlowSession) : FlowLogic<Unit>() {
+
+    @Suspendable
+    override fun call() {
+        session.receive<String>().unwrap { it }
+    }
+}
+
+@StartableByRPC
+class GetNumberOfCheckpointsFlow : FlowLogic<Long>() {
+    override fun call(): Long {
+        return serviceHub.jdbcSession().prepareStatement("select count(*) from node_checkpoints").use { ps ->
+            ps.executeQuery().use { rs ->
+                rs.next()
+                rs.getLong(1)
+            }
+        }
     }
 }

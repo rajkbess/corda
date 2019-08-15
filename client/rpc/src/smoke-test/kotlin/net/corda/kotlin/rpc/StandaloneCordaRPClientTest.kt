@@ -3,39 +3,40 @@ package net.corda.kotlin.rpc
 import com.google.common.hash.Hashing
 import com.google.common.hash.HashingInputStream
 import net.corda.client.rpc.CordaRPCConnection
+import net.corda.client.rpc.PermissionException
 import net.corda.core.crypto.SecureHash
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
-import net.corda.core.internal.*
+import net.corda.core.internal.InputStreamAndHash
 import net.corda.core.messaging.*
 import net.corda.core.node.NodeInfo
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.vault.*
-import net.corda.core.utilities.*
+import net.corda.core.utilities.OpaqueBytes
+import net.corda.core.utilities.contextLogger
+import net.corda.core.utilities.getOrThrow
+import net.corda.core.utilities.seconds
 import net.corda.finance.DOLLARS
 import net.corda.finance.POUNDS
 import net.corda.finance.SWISS_FRANCS
 import net.corda.finance.USD
 import net.corda.finance.contracts.asset.Cash
-import net.corda.finance.contracts.getCashBalance
-import net.corda.finance.contracts.getCashBalances
+import net.corda.finance.workflows.getCashBalance
+import net.corda.finance.workflows.getCashBalances
 import net.corda.finance.flows.CashIssueFlow
 import net.corda.finance.flows.CashPaymentFlow
+import net.corda.java.rpc.StandaloneCordaRPCJavaClientTest
 import net.corda.nodeapi.internal.config.User
 import net.corda.smoketesting.NodeConfig
 import net.corda.smoketesting.NodeProcess
 import org.apache.commons.io.output.NullOutputStream
-import org.junit.After
-import org.junit.Before
-import org.junit.Ignore
-import org.junit.Test
+import org.junit.*
+import org.junit.rules.ExpectedException
 import java.io.FilterInputStream
 import java.io.InputStream
-import java.nio.file.Paths
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.streams.toList
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
@@ -44,7 +45,10 @@ import kotlin.test.assertTrue
 class StandaloneCordaRPClientTest {
     private companion object {
         private val log = contextLogger()
-        val user = User("user1", "test", permissions = setOf("ALL"))
+        val superUser = User("superUser", "test", permissions = setOf("ALL"))
+        val nonUser = User("nonUser", "test", permissions = emptySet())
+        val rpcUser = User("rpcUser", "test", permissions = setOf("InvokeRpc.startFlow", "InvokeRpc.killFlow"))
+        val flowUser = User("flowUser", "test", permissions = setOf("StartFlow.net.corda.finance.flows.CashIssueFlow"))
         val port = AtomicInteger(15200)
         const val attachmentSize = 2116
         val timeout = 60.seconds
@@ -63,15 +67,18 @@ class StandaloneCordaRPClientTest {
             rpcPort = port.andIncrement,
             rpcAdminPort = port.andIncrement,
             isNotary = true,
-            users = listOf(user)
+            users = listOf(superUser, nonUser, rpcUser, flowUser)
     )
+
+    @get:Rule
+    val exception: ExpectedException = ExpectedException.none()
 
     @Before
     fun setUp() {
         factory = NodeProcess.Factory()
-        copyFinanceCordapp()
+        StandaloneCordaRPCJavaClientTest.copyCordapps(factory, notaryConfig)
         notary = factory.create(notaryConfig)
-        connection = notary.connect()
+        connection = notary.connect(superUser)
         rpcProxy = connection.proxy
         notaryNode = fetchNotaryIdentity()
         notaryNodeIdentity = rpcProxy.nodeInfo().legalIdentitiesAndCerts.first().party
@@ -79,20 +86,9 @@ class StandaloneCordaRPClientTest {
 
     @After
     fun done() {
-        try {
-            connection.close()
-        } finally {
+        connection.use {
             notary.close()
         }
-    }
-
-    private fun copyFinanceCordapp() {
-        val cordappsDir = (factory.baseDirectory(notaryConfig) / NodeProcess.CORDAPPS_DIR_NAME).createDirectories()
-        // Find the finance jar file for the smoke tests of this module
-        val financeJar = Paths.get("build", "resources", "smokeTest").list {
-            it.filter { "corda-finance" in it.toString() }.toList().single()
-        }
-        financeJar.copyToDirectory(cordappsDir)
     }
 
 
@@ -237,6 +233,27 @@ class StandaloneCordaRPClientTest {
         val balance = rpcProxy.getCashBalance(USD)
         println("Balance: $balance")
         assertEquals(629.DOLLARS, balance)
+    }
+
+    @Test
+    fun `test kill flow without killFlow permission`() {
+        exception.expect(PermissionException::class.java)
+        exception.expectMessage("User not authorized to perform RPC call killFlow")
+
+        val flowHandle = rpcProxy.startFlow(::CashIssueFlow, 10.DOLLARS, OpaqueBytes.of(0), notaryNodeIdentity)
+        notary.connect(nonUser).use { connection ->
+            val rpcProxy = connection.proxy
+            rpcProxy.killFlow(flowHandle.id)
+        }
+    }
+
+    @Test
+    fun `test kill flow with killFlow permission`() {
+        val flowHandle = rpcProxy.startFlow(::CashIssueFlow, 83.DOLLARS, OpaqueBytes.of(0), notaryNodeIdentity)
+        notary.connect(rpcUser).use { connection ->
+            val rpcProxy = connection.proxy
+            assertTrue(rpcProxy.killFlow(flowHandle.id))
+        }
     }
 
     private fun fetchNotaryIdentity(): NodeInfo {

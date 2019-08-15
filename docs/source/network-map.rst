@@ -48,6 +48,25 @@ The set of REST end-points for the network map service are as follows.
 | GET            | /network-map/my-hostname                | Retrieve the IP address of the caller (and **not** of the network map).                                                                      |
 +----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
 
+Network maps hosted by R3 or other parties using R3's commercial network management tools typically also provide the following endpoints as a convenience to operators and other users
+
+.. note:: we include them here as they can aid debugging but, for the avoidance of doubt, they are not a formal part of the spec and the node will operate even in their absence.
+
++----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
+| Request method | Path                                    | Description                                                                                                                                  |
++================+=========================================+==============================================================================================================================================+
+| GET            | /network-map/json                       | Retrieve the current public network map formatted as a JSON document.                                                                        |
++----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
+| GET            | /network-map/json/{uuid}                | Retrieve the current network map for a private network indicated by the uuid parameter formatted as a JSON document.                         |
++----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
+| GET            | /network-map/json/node-infos            | Retrieve a human readable list of the currently registered ``NodeInfo`` files in the public network formatted as a JSON document.            |
++----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
+| GET            | /network-map/json/node-infos/{uid}      | Retrieve a human readable list of the currently registered ``NodeInfo`` files in the specified private network map.                          |
++----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
+| GET            | /network-map/json/node-info/{hash}      | Retrieve a human readable version of a ``NodeInfo`` formatted as a JSON document.                                                            |
++----------------+-----------------------------------------+----------------------------------------------------------------------------------------------------------------------------------------------+
+
+
 HTTP is used for the network map service instead of Corda's own AMQP based peer to peer messaging protocol to
 enable the server to be placed behind caching content delivery networks like Cloudflare, Akamai, Amazon Cloudfront and so on.
 By using industrial HTTP cache networks the map server can be shielded from DoS attacks more effectively. Additionally,
@@ -140,19 +159,20 @@ connectivity is required for zone members, required cryptographic algorithms and
 Network parameters update process
 ---------------------------------
 
-In case of the need to change network parameters Corda zone operator will start the update process. There are many reasons
-that may lead to this decision: adding a notary, setting new fields that were added to enable smooth network interoperability,
-or a change of the existing compatibility constants is required, for example.
+Network parameters are controlled by the zone operator of the Corda network that you are a member of. Occasionally, they may need to change
+these parameters. There are many reasons that can lead to this decision: adding a notary, setting new fields that were added to enable
+smooth network interoperability, or a change of the existing compatibility constants is required, for example.
 
 .. note:: A future release may support the notion of phased roll-out of network parameter changes.
 
-To synchronize all nodes in the compatibility zone to use the new set of the network parameters two RPC methods are
-provided. The process requires human interaction and approval of the change, so node operators can review the
-differences before agreeing to them.
+Updating of the parameters by the zone operator is done in two phases:
+1. Advertise the proposed network parameter update to the entire network.
+2. Switching the network onto the new parameters - also known as a `flag day`.
 
-When the update is about to happen the network map service starts to advertise the additional information with the usual network map
-data. It includes new network parameters hash, description of the change and the update deadline. Nodes query the network map server
-for the new set of parameters.
+The proposed parameter update will include, along with the new parameters, a human-readable description of the changes as well as the
+deadline for accepting the update. The acceptance deadline marks the date and time that the zone operator intends to switch the entire
+network onto the new parameters. This will be a reasonable amount of time in the future, giving the node operators time to inspect,
+discuss and accept the parameters.
 
 The fact a new set of parameters is being advertised shows up in the node logs with the message
 "Downloaded new network parameters", and programs connected via RPC can receive ``ParametersUpdateInfo`` by using

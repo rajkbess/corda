@@ -5,16 +5,15 @@ apply plugin: 'application'
 sourceCompatibility = 1.8
 mainClassName = 'net.corda.explorer.Main'
 
-// Use manual resource copying of log4j2.xml rather than source sets.
-// This prevents problems in IntelliJ with regard to duplicate source roots.
-processResources {
-    from file("$rootDir/config/dev/log4j2.xml")
-}
-
 dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+
+    testImplementation "junit:junit:$junit_version"
+
+    testRuntimeOnly "org.junit.vintage:junit-vintage-engine:${junit_vintage_version}"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher:${junit_platform_version}"
+
     testCompile "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
-    testCompile "junit:junit:$junit_version"
 
     // TornadoFX: A lightweight Kotlin framework for working with JavaFX UI's.
     compile 'no.tornado:tornadofx:1.5.9'
@@ -22,30 +21,33 @@ dependencies {
     // Corda Core: Data structures and basic types needed to work with Corda.
     compile project(':core')
     compile project(':client:jfx')
-    compile project(':client:mock')
-    compile project(':node-driver')
-    compile project(':finance')
+    compile project(':finance:contracts')
+    compile project(':finance:workflows')
+    compile project(':tools:worldmap')
+    compile project(':common-logging')
+
+    // Log4J: logging framework (with SLF4J bindings)
+    compile "org.apache.logging.log4j:log4j-slf4j-impl:$log4j_version"
 
     // Capsule is a library for building independently executable fat JARs.
     // We only need this dependency to compile our Caplet against.
     compileOnly "co.paralleluniverse:capsule:$capsule_version"
 
     // FontAwesomeFX: The "FontAwesome" icon library.
-    compile 'de.jensd:fontawesomefx-fontawesome:4.7.0'
+    compile "de.jensd:fontawesomefx-fontawesome:$fontawesomefx_fontawesome_version"
+    compile "de.jensd:fontawesomefx-commons:$fontawesomefx_commons_version"
 
     // ReactFX: Functional reactive UI programming.
     compile 'org.reactfx:reactfx:2.0-M5'
     compile 'org.fxmisc.easybind:easybind:1.0.3'
 
-    // JFXtras: useful widgets including a calendar control.
-    compile 'org.jfxtras:jfxtras-agenda:8.0-r5'
-    compile 'org.jfxtras:jfxtras-font-roboto:8.0-r5'
+    compile 'org.jfxtras:jfxtras-font-roboto:8.0-r6'
 
     // Humanize: formatting
     compile 'com.github.mfornos:humanize-icu:1.2.2'
 
     // Controls FX: more java FX components http://fxexperience.com/controlsfx/
-    compile 'org.controlsfx:controlsfx:8.40.12'
+    compile "org.controlsfx:controlsfx:$controlsfx_version"
     // This provide com.apple.eawt stub for non-mac system.
     compile 'com.yuvimasory:orange-extensions:1.3.0'
 
@@ -58,21 +60,10 @@ tasks.withType(JavaCompile) {
     options.compilerArgs << '-proc:none'
 }
 
-task runDemoNodes(dependsOn: 'classes', type: JavaExec) {
-    main = 'net.corda.explorer.MainKt'
-    classpath = sourceSets.main.runtimeClasspath
-}
-
-task runSimulationNodes(dependsOn: 'classes', type: JavaExec) {
-    main = 'net.corda.explorer.MainKt'
-    classpath = sourceSets.main.runtimeClasspath
-    args '-S'
-}
-
 jar {
     manifest {
         attributes(
-                'Automatic-Module-Name': 'net.corda.tools.explorer'
+            'Automatic-Module-Name': 'net.corda.tools.explorer'
         )
     }
 }

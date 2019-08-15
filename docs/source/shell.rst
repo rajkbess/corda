@@ -26,9 +26,11 @@ Permissions
 When accessing the shell (embedded, standalone, via SSH) RPC permissions are required. This is because the shell actually communicates
 with the node using RPC calls.
 
-* Watching flows (``flow watch``) requires ``InvokeRpc.stateMachinesFeed``
+* Watching flows (``flow watch``) requires ``InvokeRpc.stateMachinesFeed``.
 * Starting flows requires ``InvokeRpc.startTrackedFlowDynamic``, ``InvokeRpc.registeredFlows`` and ``InvokeRpc.wellKnownPartyFromX500Name``, as well as a
-  permission for the flow being started
+  permission for the flow being started.
+* Killing flows (``flow kill``) requires ``InvokeRpc.killFlow``. This currently
+  allows the user to kill *any* flow, so please be careful when granting it!
 
 The shell via the local terminal
 --------------------------------
@@ -98,7 +100,7 @@ The standalone shell
 --------------------
 The standalone shell is a standalone application interacting with a Corda node via RPC calls.
 RPC node permissions are necessary for authentication and authorisation.
-Certain operations, such as starting flows, require access to CordApps jars.
+Certain operations, such as starting flows, require access to the CorDapp jars.
 
 Starting the standalone shell
 *****************************
@@ -203,8 +205,8 @@ Shutting down the node
 
 You can shut the node down via shell:
 
-* ``gracefulShutdown`` will put node into draining mode, and shut down when there are no flows running
-* ``shutdown`` will shut the node down immediately
+* ``run gracefulShutdown`` will put node into draining mode, and shut down when there are no flows running
+* ``run shutdown`` will shut the node down immediately
 
 Output Formats
 **********************
@@ -231,6 +233,7 @@ The shell also has special commands for working with flows:
   names and types of the arguments will be used to try and automatically determine which one to use. If the match
   against available constructors is unclear, the reasons each available constructor failed to match will be printed
   out. In the case of an ambiguous match, the first applicable constructor will be used
+* ``flow kill`` kills a single flow, as identified by its UUID.
 
 Parameter syntax
 ****************

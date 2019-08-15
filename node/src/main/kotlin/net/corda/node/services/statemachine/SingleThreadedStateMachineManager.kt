@@ -13,11 +13,7 @@ import net.corda.core.flows.FlowInfo
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StateMachineRunId
 import net.corda.core.identity.Party
-import net.corda.core.internal.FlowStateMachine
-import net.corda.core.internal.ThreadBox
-import net.corda.core.internal.TimedFlow
-import net.corda.core.internal.bufferUntilSubscribed
-import net.corda.core.internal.castIfPossible
+import net.corda.core.internal.*
 import net.corda.core.internal.concurrent.OpenFuture
 import net.corda.core.internal.concurrent.map
 import net.corda.core.internal.concurrent.openFuture
@@ -38,30 +34,29 @@ import net.corda.node.services.api.ServiceHubInternal
 import net.corda.node.services.config.shouldCheckCheckpoints
 import net.corda.node.services.messaging.DeduplicationHandler
 import net.corda.node.services.statemachine.FlowStateMachineImpl.Companion.createSubFlowVersion
-import net.corda.node.services.statemachine.interceptors.DumpHistoryOnErrorInterceptor
-import net.corda.node.services.statemachine.interceptors.FiberDeserializationChecker
-import net.corda.node.services.statemachine.interceptors.FiberDeserializationCheckingInterceptor
-import net.corda.node.services.statemachine.interceptors.HospitalisingInterceptor
-import net.corda.node.services.statemachine.interceptors.PrintingInterceptor
+import net.corda.node.services.statemachine.interceptors.*
 import net.corda.node.services.statemachine.transitions.StateMachine
 import net.corda.node.utilities.AffinityExecutor
+import net.corda.node.utilities.errorAndTerminate
 import net.corda.node.utilities.injectOldProgressTracker
+import net.corda.node.utilities.isEnabledTimedFlow
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.wrapWithDatabaseTransaction
 import net.corda.serialization.internal.CheckpointSerializeAsTokenContextImpl
 import net.corda.serialization.internal.withTokenContext
 import org.apache.activemq.artemis.utils.ReusableLatch
-import org.apache.logging.log4j.LogManager
 import rx.Observable
 import rx.subjects.PublishSubject
+import java.lang.Integer.min
 import java.security.SecureRandom
 import java.util.HashSet
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.*
 import javax.annotation.concurrent.ThreadSafe
+import kotlin.collections.ArrayList
+import kotlin.collections.HashMap
+import kotlin.collections.component1
+import kotlin.collections.component2
+import kotlin.collections.set
 import kotlin.streams.toList
 
 /**
@@ -147,9 +142,7 @@ class SingleThreadedStateMachineManager(
         metrics.register("Flows.InFlight", Gauge<Int> { mutex.content.flows.size })
         Fiber.setDefaultUncaughtExceptionHandler { fiber, throwable ->
             if (throwable is VirtualMachineError) {
-                (fiber as FlowStateMachineImpl<*>).logger.error("Caught unrecoverable error from flow. Forcibly terminating the JVM, this might leave resources open, and most likely will.", throwable)
-                LogManager.shutdown(true)
-                Runtime.getRuntime().halt(1)
+                errorAndTerminate("Caught unrecoverable error from flow. Forcibly terminating the JVM, this might leave resources open, and most likely will.", throwable)
             } else {
                 (fiber as FlowStateMachineImpl<*>).logger.warn("Caught exception from flow", throwable)
             }
@@ -310,7 +303,7 @@ class SingleThreadedStateMachineManager(
     private fun checkQuasarJavaAgentPresence() {
         check(SuspendableHelper.isJavaAgentActive()) {
             """Missing the '-javaagent' JVM argument. Make sure you run the tests with the Quasar java agent attached to your JVM.
-               #See https://docs.corda.net/troubleshooting.html - 'Fiber classes not instrumented' for more details.""".trimMargin("#")
+               #See https://docs.corda.net/head/testing.html#running-tests-in-intellij - 'Fiber classes not instrumented' for more details.""".trimMargin("#")
         }
     }
 
@@ -323,19 +316,21 @@ class SingleThreadedStateMachineManager(
     }
 
     private fun restoreFlowsFromCheckpoints(): List<Flow> {
-        return checkpointStorage.getAllCheckpoints().map { (id, serializedCheckpoint) ->
-            // If a flow is added before start() then don't attempt to restore it
-            mutex.locked { if (flows.containsKey(id)) return@map null }
-            val checkpoint = deserializeCheckpoint(serializedCheckpoint) ?: return@map null
-            logger.debug { "Restored $checkpoint" }
-            createFlowFromCheckpoint(
-                    id = id,
-                    checkpoint = checkpoint,
-                    initialDeduplicationHandler = null,
-                    isAnyCheckpointPersisted = true,
-                    isStartIdempotent = false
-            )
-        }.toList().filterNotNull()
+        return checkpointStorage.getAllCheckpoints().use {
+            it.mapNotNull { (id, serializedCheckpoint) ->
+                // If a flow is added before start() then don't attempt to restore it
+                mutex.locked { if (id in flows) return@mapNotNull null }
+                val checkpoint = deserializeCheckpoint(serializedCheckpoint) ?: return@mapNotNull null
+                logger.debug { "Restored $checkpoint" }
+                createFlowFromCheckpoint(
+                        id = id,
+                        checkpoint = checkpoint,
+                        initialDeduplicationHandler = null,
+                        isAnyCheckpointPersisted = true,
+                        isStartIdempotent = false
+                )
+            }.toList()
+        }
     }
 
     private fun resumeRestoredFlows(flows: List<Flow>) {
@@ -423,7 +418,7 @@ class SingleThreadedStateMachineManager(
         val sessionMessage = try {
             event.receivedMessage.data.deserialize<SessionMessage>()
         } catch (ex: Exception) {
-            logger.error("Received corrupt SessionMessage data from $peer")
+            logger.error("Unable to deserialize SessionMessage data from $peer", ex)
             event.deduplicationHandler.afterDatabaseTransaction()
             return
         }
@@ -452,12 +447,13 @@ class SingleThreadedStateMachineManager(
                                 "unknown session $recipientId, discarding..."
                     }
                 } else {
-                    logger.warn("Cannot find flow corresponding to session ID $recipientId.")
+                    // It happens when flows restart and the old sessions messages still arrive from a peer.
+                    logger.info("Cannot find flow corresponding to session ID - $recipientId.")
                 }
             } else {
-                val flow = mutex.locked { flows[flowId] }
-                        ?: throw IllegalStateException("Cannot find fiber corresponding to ID $flowId")
-                flow.fiber.scheduleEvent(Event.DeliverSessionMessage(sessionMessage, deduplicationHandler, sender))
+                mutex.locked { flows[flowId] }?.run {
+                    fiber.scheduleEvent(Event.DeliverSessionMessage(sessionMessage, deduplicationHandler, sender))
+                } ?: logger.info("Cannot find fiber corresponding to flow ID $flowId")
             }
         } catch (exception: Exception) {
             logger.error("Exception while routing $sessionMessage", exception)
@@ -544,7 +540,15 @@ class SingleThreadedStateMachineManager(
 
         val flowCorDappVersion = createSubFlowVersion(serviceHub.cordappProvider.getCordappForFlow(flowLogic), serviceHub.myInfo.platformVersion)
 
-        val initialCheckpoint = Checkpoint.create(invocationContext, flowStart, flowLogic.javaClass, frozenFlowLogic, ourIdentity, flowCorDappVersion).getOrThrow()
+        val initialCheckpoint = Checkpoint.create(
+                invocationContext,
+                flowStart,
+                flowLogic.javaClass,
+                frozenFlowLogic,
+                ourIdentity,
+                flowCorDappVersion,
+                flowLogic.isEnabledTimedFlow()
+        ).getOrThrow()
         val startedFuture = openFuture<Unit>()
         val initialState = StateMachineState(
                 checkpoint = initialCheckpoint,
@@ -627,7 +631,7 @@ class SingleThreadedStateMachineManager(
     private fun scheduleTimeoutException(flow: Flow, delay: Long): ScheduledFuture<*> {
         return with(serviceHub.configuration.flowTimeout) {
             timeoutScheduler.schedule({
-                val event = Event.Error(FlowTimeoutException(maxRestartCount))
+                val event = Event.Error(FlowTimeoutException())
                 flow.fiber.scheduleEvent(event)
             }, delay, TimeUnit.SECONDS)
         }
@@ -635,7 +639,7 @@ class SingleThreadedStateMachineManager(
 
     private fun calculateDefaultTimeoutSeconds(retryCount: Int): Long {
         return with(serviceHub.configuration.flowTimeout) {
-            val timeoutDelaySeconds = timeout.seconds * Math.pow(backoffBase, retryCount.toDouble()).toLong()
+            val timeoutDelaySeconds = timeout.seconds * Math.pow(backoffBase, min(retryCount, maxRestartCount).toDouble()).toLong()
             maxOf(1L, ((1.0 + Math.random()) * timeoutDelaySeconds / 2).toLong())
         }
     }
@@ -761,7 +765,7 @@ class SingleThreadedStateMachineManager(
                     oldFlow.resultFuture.captureLater(flow.resultFuture)
                 }
                 val flowLogic = flow.fiber.logic
-                if (flowLogic is TimedFlow) scheduleTimeout(id)
+                if (flowLogic.isEnabledTimedFlow()) scheduleTimeout(id)
                 flow.fiber.scheduleEvent(Event.DoRemainingWork)
                 when (checkpoint.flowState) {
                     is FlowState.Unstarted -> {

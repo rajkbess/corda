@@ -1,5 +1,15 @@
 package net.corda.core.cordapp
 
-const val CORDAPP_CONTRACT_VERSION = "Implementation-Version"  //TODO will be changed to "Corda-Contract-Version"
+import net.corda.core.crypto.SecureHash
+import net.corda.core.serialization.CordaSerializable
 
-const val DEFAULT_CORDAPP_VERSION: Int = 1
+@CordaSerializable
+data class CordappInfo(val type: String,
+                       val name: String,
+                       val shortName: String,
+                       val minimumPlatformVersion: Int,
+                       val targetPlatformVersion: Int,
+                       val version: String,
+                       val vendor: String,
+                       val licence: String,
+                       val jarHash: SecureHash.SHA256)

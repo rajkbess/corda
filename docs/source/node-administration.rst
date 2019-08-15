@@ -1,19 +1,25 @@
 Node administration
 ===================
 
+.. _hiding-sensitive-data:
+
+
 Logging
 -------
 
 By default the node log files are stored to the ``logs`` subdirectory of the working directory and are rotated from time
 to time. You can have logging printed to the console as well by passing the ``--log-to-console`` command line flag.
 The default logging level is ``INFO`` which can be adjusted by the ``--logging-level`` command line argument. This configuration
-option will affect all modules.
+option will affect all modules. Hibernate (the JPA provider used by Corda) specific log messages of level ``WARN`` and above 
+will be logged to the diagnostic log file, which is stored in the same location as other log files (``logs`` subdirectory 
+by default). This is because Hibernate may log messages at WARN and ERROR that are handled internally by Corda and do not 
+need operator attention. If they do, they will be logged by Corda itself in the main node log file.
 
 It may be the case that you require to amend the log level of a particular subset of modules (e.g., if you'd like to take a
 closer look at hibernate activity). So, for more bespoke logging configuration, the logger settings can be completely overridden
-with a `Log4j 2 <https://logging.apache.org/log4j/2.x>`_ configuration file assigned to the ``log4j.configurationFile`` system property.
+with a `Log4j2 <https://logging.apache.org/log4j/2.x>`_ configuration file assigned to the ``log4j.configurationFile`` system property.
 
-The node is using log4j asynchronous logging by default (configured via log4j2 properties file in its resources)
+The node is using log4j2 asynchronous logging by default (configured via log4j2 properties file in its resources)
 to ensure that log message flushing is not slowing down the actual processing.
 If you need to switch to synchronous logging (e.g. for debugging/testing purposes), you can override this behaviour
 by adding ``-DLog4jContextSelector=org.apache.logging.log4j.core.selector.ClassLoaderContextSelector`` to the node's
@@ -81,7 +87,7 @@ formats for accessing MBeans, and provides client libraries to work with that pr
 
 Here are a few ways to build dashboards and extract monitoring data for a node:
 
-* `hawtio <http://hawt.io>`_ is a web based console that connects directly to JVM's that have been instrumented with a
+* `Hawtio <http://hawt.io>`_ is a web based console that connects directly to JVM's that have been instrumented with a
   jolokia agent. This tool provides a nice JMX dashboard very similar to the traditional JVisualVM / JConsole MBbeans original.
 * `JMX2Graphite <https://github.com/logzio/jmx2graphite>`_ is a tool that can be pointed to /monitoring/json and will
   scrape the statistics found there, then insert them into the Graphite monitoring tool on a regular basis. It runs
@@ -120,16 +126,16 @@ Notes for development use
 
 When running in dev mode, Hibernate statistics are also available via the Jolkia interface. These are disabled otherwise
 due to expensive run-time costs. They can be turned on and off explicitly regardless of dev mode via the
-``exportHibernateJMXStatistics`` flag on the :ref:`database configuration <databaseConfiguration>`.
+``exportHibernateJMXStatistics`` flag on the :ref:`database configuration <database_properties_ref>`.
 
 When starting Corda nodes using Cordformation runner (see :doc:`running-a-node`), you should see a startup message similar to the following:
 **Jolokia: Agent started with URL http://127.0.0.1:7005/jolokia/**
 
-When starting Corda nodes using the `DriverDSL`, you should see a startup message in the logs similar to the following:
+When starting Corda nodes using the 'driver DSL', you should see a startup message in the logs similar to the following:
 **Starting out-of-process Node USA Bank Corp, debug port is not enabled, jolokia monitoring port is 7005 {}**
 
 
-The following diagram illustrates Corda flow metrics visualized using `hawtio <https://hawt.io>`_ :
+The following diagram illustrates Corda flow metrics visualized using hawtio:
 
 .. image:: resources/hawtio-jmx.png
 
@@ -150,6 +156,55 @@ node is running out of memory, you can give it more by running the node like thi
 The example command above would give a 1 gigabyte Java heap.
 
 .. note:: Unfortunately the JVM does not let you limit the total memory usage of Java program, just the heap size.
+
+Hiding sensitive data
+---------------------
+A frequent requirement is that configuration files must not expose passwords to unauthorised readers. By leveraging environment variables, it is possible to hide passwords and other similar fields.
+
+Take a simple node config that wishes to protect the node cryptographic stores:
+
+.. code-block:: none
+
+    myLegalName = "O=PasswordProtectedNode,OU=corda,L=London,C=GB"
+    keyStorePassword = ${KEY_PASS}
+    trustStorePassword = ${TRUST_PASS}
+    p2pAddress = "localhost:12345"
+    devMode = false
+     networkServices {
+        doormanURL = "https://cz.example.com"
+        networkMapURL = "https://cz.example.com"
+    }
+
+By delegating to a password store, and using `command substitution` it is possible to ensure that sensitive passwords never appear in plain text.
+The below examples are of loading Corda with the KEY_PASS and TRUST_PASS variables read from a program named ``corporatePasswordStore``.
+
+Bash
+++++
+
+.. sourcecode:: shell
+
+    KEY_PASS=$(corporatePasswordStore --cordaKeyStorePassword) TRUST_PASS=$(corporatePasswordStore --cordaTrustStorePassword) java -jar corda.jar
+
+.. warning:: If this approach is taken, the passwords will appear in the shell history.
+
+Windows PowerShell
+++++++++++++++++++
+
+.. sourcecode:: shell
+
+    $env:KEY_PASS=$(corporatePasswordStore --cordaKeyStorePassword); $env:TRUST_PASS=$(corporatePasswordStore --cordaTrustStorePassword); java -jar corda.jar
+
+
+For launching on Windows without PowerShell, it is not possible to perform command substitution, and so the variables must be specified manually, for example:
+
+.. sourcecode:: shell
+
+    SET KEY_PASS=mypassword & SET TRUST_PASS=mypassword & java -jar corda.jar
+
+.. warning:: If this approach is taken, the passwords will appear in the windows command prompt history.
+
+
+.. _backup-recommendations:
 
 Backup recommendations
 ----------------------
@@ -187,3 +242,40 @@ If the above holds, Corda components will benefit from the following:
 * A timely recovery from deletion or corruption of configuration files (e.g., ``node.conf``, ``node-info`` files, etc.), database drivers, CorDapps binaries and configuration, and certificate directories, provided backups are available to restore from.
 
 .. warning:: Private keys used to sign transactions should be preserved with the utmost care. The recommendation is to keep at least two separate copies on a storage not connected to the Internet.
+
+Checking node version and installed CorDapps
+--------------------------------------------
+
+A ``nodeDiagnosticInfo`` RPC call can be made to obtain version information about the Corda platform running on the node. The returned ``NodeDiagnosticInfo`` object also includes information about the CorDapps installed on the node.
+The RPC call is also available as the ``run nodeDiagnosticInfo`` command executable from the Corda shell that can be accessed via the local terminal, SSH, or as the standalone shell.
+
+Example
++++++++
+
+Here is a sample output displayed by the ``run nodeDiagnosticInfo`` command executed from the Corda shell:
+
+.. code-block:: none
+
+    version: "|corda_version|"
+    revision: "d7e4a0050049be357999f57f69d8bca41a2b8274"
+    platformVersion: 4
+    vendor: "Corda Open Source"
+    cordapps:
+    - type: "Contract CorDapp"
+      name: "corda-finance-contracts-|corda_version|"
+      shortName: "Corda Finance Demo"
+      minimumPlatformVersion: 1
+      targetPlatformVersion: 4
+      version: "1"
+      vendor: "R3"
+      licence: "Open Source (Apache 2)"
+      jarHash: "570EEB9DF4B43680586F3BE663F9C5844518BC2E410EAF9904E8DEE930B7E45C"
+    - type: "Workflow CorDapp"
+      name: "corda-finance-workflows-|corda_version|"
+      shortName: "Corda Finance Demo"
+      minimumPlatformVersion: 1
+      targetPlatformVersion: 4
+      version: "1"
+      vendor: "R3"
+      licence: "Open Source (Apache 2)"
+      jarHash: "6EA4E0B36010F1DD27B5677F3686B4713BA40C316804A4188DCA20F477FDB23F"

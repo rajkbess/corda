@@ -231,19 +231,19 @@ object DefaultKryoCustomizer {
                     val attachment = attachmentStorage.openAttachment(attachmentHash)
                             ?: throw MissingAttachmentsException(listOf(attachmentHash))
                     attachment.open().readFully()
-                }) {
+                }, uploader) {
                     override val id = attachmentHash
                 }
 
-                return ContractAttachment(lazyAttachment, contract, additionalContracts, uploader, signers, version)
+                return ContractAttachment.create(lazyAttachment, contract, additionalContracts, uploader, signers, version)
             } else {
-                val attachment = GeneratedAttachment(input.readBytesWithLength())
+                val attachment = GeneratedAttachment(input.readBytesWithLength(), "generated")
                 val contract = input.readString()
                 val additionalContracts = kryo.readClassAndObject(input) as Set<ContractClassName>
                 val uploader = input.readString()
                 val signers = kryo.readClassAndObject(input) as List<PublicKey>
                 val version = input.readInt()
-                return ContractAttachment(attachment, contract, additionalContracts, uploader, signers, version)
+                return ContractAttachment.create(attachment, contract, additionalContracts, uploader, signers, version)
             }
         }
     }

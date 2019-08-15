@@ -1,13 +1,12 @@
 package net.corda.node.services.keys
 
 import net.corda.core.crypto.*
-import net.corda.core.identity.PartyAndCertificate
+import net.corda.core.crypto.internal.AliasPrivateKey
 import net.corda.core.internal.ThreadBox
 import net.corda.core.node.services.IdentityService
 import net.corda.core.serialization.SingletonSerializeAsToken
-import net.corda.core.crypto.internal.AliasPrivateKey
-import net.corda.node.services.keys.cryptoservice.BCCryptoService
 import net.corda.nodeapi.internal.cryptoservice.CryptoService
+import net.corda.nodeapi.internal.cryptoservice.bouncycastle.BCCryptoService
 import org.bouncycastle.operator.ContentSigner
 import java.security.KeyPair
 import java.security.PrivateKey
@@ -27,7 +26,7 @@ import javax.annotation.concurrent.ThreadSafe
  * etc.
  */
 @ThreadSafe
-class E2ETestKeyManagementService(val identityService: IdentityService, private val cryptoService: CryptoService? = null) : SingletonSerializeAsToken(), KeyManagementServiceInternal {
+class E2ETestKeyManagementService(override val identityService: IdentityService, private val cryptoService: CryptoService? = null) : SingletonSerializeAsToken(), KeyManagementServiceInternal {
     private class InnerState {
         val keys = HashMap<PublicKey, PrivateKey>()
     }
@@ -53,7 +52,10 @@ class E2ETestKeyManagementService(val identityService: IdentityService, private 
         }
     }
 
-    override fun freshKey(): PublicKey {
+    override fun freshKeyInternal(externalId: UUID?): PublicKey {
+        if (externalId != null) {
+            throw UnsupportedOperationException("This operation is only supported by persistent key management service variants.")
+        }
         val keyPair = generateKeyPair()
         mutex.locked {
             keys[keyPair.public] = keyPair.private
@@ -61,11 +63,7 @@ class E2ETestKeyManagementService(val identityService: IdentityService, private 
         return keyPair.public
     }
 
-    override fun freshKeyAndCert(identity: PartyAndCertificate, revocationEnabled: Boolean): PartyAndCertificate {
-        return freshCertificate(identityService, freshKey(), identity, getSigner(identity.owningKey))
-    }
-
-    private fun getSigner(publicKey: PublicKey): ContentSigner = getSigner(getSigningKeyPair(publicKey))
+    override fun getSigner(publicKey: PublicKey): ContentSigner = getSigner(getSigningKeyPair(publicKey))
 
     private fun getSigningKeyPair(publicKey: PublicKey): KeyPair {
         return mutex.locked {

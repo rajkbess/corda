@@ -12,6 +12,7 @@ import net.corda.core.identity.AbstractParty
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
 import net.corda.core.node.NetworkParameters
+import net.corda.core.node.NodeDiagnosticInfo
 import net.corda.core.node.NodeInfo
 import net.corda.core.node.services.AttachmentId
 import net.corda.core.node.services.NetworkMapCache
@@ -22,6 +23,8 @@ import net.corda.core.serialization.CordaSerializable
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.Try
 import rx.Observable
+import rx.schedulers.Schedulers
+import rx.subjects.PublishSubject
 import java.io.IOException
 import java.io.InputStream
 import java.security.PublicKey
@@ -279,6 +282,11 @@ interface CordaRPCOps : RPCOps {
     fun nodeInfo(): NodeInfo
 
     /**
+     * Returns Node's NodeDiagnosticInfo, including the version details as well as the information about installed CorDapps.
+     */
+    fun nodeDiagnosticInfo(): NodeDiagnosticInfo
+
+    /**
      * Returns network's notary identities, assuming this will not change while the node is running.
      *
      * Note that the identities are sorted based on legal name, and the ordering might change once new notaries are introduced.
@@ -418,6 +426,38 @@ interface CordaRPCOps : RPCOps {
      * @return whether the node will shutdown when the pending flows count reaches zero.
      */
     fun isWaitingForShutdown(): Boolean
+}
+
+/**
+ * Returns a [DataFeed] of the number of pending flows. The [Observable] for the updates will complete the moment all pending flows will have terminated.
+ */
+@Deprecated("For automated upgrades, consider using the `gracefulShutdown` command in an SSH session instead.")
+fun CordaRPCOps.pendingFlowsCount(): DataFeed<Int, Pair<Int, Int>> {
+    val updates = PublishSubject.create<Pair<Int, Int>>()
+    val initialPendingFlowsCount = stateMachinesFeed().let {
+        var completedFlowsCount = 0
+        var pendingFlowsCount = it.snapshot.size
+        it.updates.observeOn(Schedulers.io()).subscribe({ update ->
+            when (update) {
+                is StateMachineUpdate.Added -> {
+                    pendingFlowsCount++
+                    updates.onNext(completedFlowsCount to pendingFlowsCount)
+                }
+                is StateMachineUpdate.Removed -> {
+                    completedFlowsCount++
+                    updates.onNext(completedFlowsCount to pendingFlowsCount)
+                    if (completedFlowsCount == pendingFlowsCount) {
+                        updates.onCompleted()
+                    }
+                }
+            }
+        }, updates::onError)
+        if (pendingFlowsCount == 0) {
+            updates.onCompleted()
+        }
+        pendingFlowsCount
+    }
+    return DataFeed(initialPendingFlowsCount, updates)
 }
 
 inline fun <reified T : ContractState> CordaRPCOps.vaultQueryBy(criteria: QueryCriteria = QueryCriteria.VaultQueryCriteria(),

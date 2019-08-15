@@ -14,6 +14,7 @@ import net.corda.nodeapi.internal.config.MutualSslConfiguration
 import net.corda.nodeapi.internal.config.SslConfiguration
 import net.corda.nodeapi.internal.config.User
 import net.corda.nodeapi.internal.persistence.DatabaseConfig
+import net.corda.nodeapi.internal.persistence.SchemaInitializationType
 import net.corda.tools.shell.SSHDConfiguration
 import java.net.URL
 import java.nio.file.Path
@@ -92,7 +93,7 @@ data class NodeConfigurationImpl(
         val devModeOptions: DevModeOptions? = null
         const val useTestClock: Boolean = false
         const val lazyBridgeStart: Boolean = true
-        const val detectPublicIp: Boolean = true
+        const val detectPublicIp: Boolean = false
         val additionalNodeInfoPollingFrequencyMsec: Long = 5.seconds.toMillis()
         val sshd: SSHDConfiguration? = null
         val transactionCacheSizeMegaBytes: Int? = null
@@ -112,7 +113,11 @@ data class NodeConfigurationImpl(
 
         fun messagingServerExternal(messagingServerAddress: NetworkHostAndPort?) = messagingServerAddress != null
 
-        fun database(devMode: Boolean) = DatabaseConfig(initialiseSchema = devMode, exportHibernateJMXStatistics = devMode)
+        fun database(devMode: Boolean) = DatabaseConfig(
+                initialiseSchema = devMode,
+                initialiseAppSchema = if(devMode) SchemaInitializationType.UPDATE else SchemaInitializationType.VALIDATE,
+                exportHibernateJMXStatistics = devMode
+        )
     }
 
     companion object {

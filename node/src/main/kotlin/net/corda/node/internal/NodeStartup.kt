@@ -1,12 +1,18 @@
 package net.corda.node.internal
 
 import io.netty.channel.unix.Errors
-import net.corda.cliutils.*
+import net.corda.cliutils.printError
+import net.corda.cliutils.CliWrapperBase
+import net.corda.cliutils.CordaCliWrapper
+import net.corda.cliutils.ExitCodes
+import net.corda.common.logging.CordaVersion
+import net.corda.core.contracts.HashAttachmentConstraint
 import net.corda.core.crypto.Crypto
 import net.corda.core.internal.*
 import net.corda.core.internal.concurrent.thenMatch
 import net.corda.core.internal.cordapp.CordappImpl
 import net.corda.core.internal.errors.AddressBindingException
+import net.corda.core.internal.safeSymbolicRead
 import net.corda.core.utilities.Try
 import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.loggerFor
@@ -26,15 +32,18 @@ import net.corda.nodeapi.internal.persistence.DatabaseIncompatibleException
 import net.corda.tools.shell.InteractiveShell
 import org.fusesource.jansi.Ansi
 import org.slf4j.bridge.SLF4JBridgeHandler
-import picocli.CommandLine.*
+import picocli.CommandLine.Mixin
 import sun.misc.VMSupport
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.lang.management.ManagementFactory
 import java.net.InetAddress
+import java.nio.channels.UnresolvedAddressException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.DayOfWeek
 import java.time.ZonedDateTime
+import java.util.function.Consumer
 
 /** An interface that can be implemented to tell the node what to do once it's intitiated. */
 interface RunAfterNodeInitialisation {
@@ -47,7 +56,7 @@ abstract class NodeCliCommand(alias: String, description: String, val startup: N
         const val LOGS_DIRECTORY_NAME = "logs"
     }
 
-    override fun initLogging() = this.initLogging(cmdLineOptions.baseDirectory)
+    override fun initLogging(): Boolean = this.initLogging(cmdLineOptions.baseDirectory)
 
     @Mixin
     val cmdLineOptions = SharedNodeCmdLineOptions()
@@ -65,9 +74,27 @@ open class NodeStartupCli : CordaCliWrapper("corda", "Runs a Corda Node") {
     private val initialRegistrationCli by lazy { InitialRegistrationCli(startup) }
     private val validateConfigurationCli by lazy { ValidateConfigurationCli() }
 
-    override fun initLogging() = this.initLogging(cmdLineOptions.baseDirectory)
+    override fun initLogging(): Boolean = this.initLogging(cmdLineOptions.baseDirectory)
 
     override fun additionalSubCommands() = setOf(networkCacheCli, justGenerateNodeInfoCli, justGenerateRpcSslCertsCli, initialRegistrationCli, validateConfigurationCli)
+
+    override fun call(): Int {
+        if (!validateBaseDirectory()) {
+            return ExitCodes.FAILURE
+        }
+        return super.call()
+    }
+
+    private fun validateBaseDirectory(): Boolean {
+        //Ensure that the base directory actually exists before initialising and the rest of the node.
+        val baseDirectory = cmdLineOptions.baseDirectory
+
+        if (!baseDirectory.exists()) {
+            printError("Base directory $baseDirectory does not exist. Node will now shutdown")
+            return false
+        }
+        return true
+    }
 
     override fun runProgram(): Int {
         return when {
@@ -103,7 +130,7 @@ open class NodeStartupCli : CordaCliWrapper("corda", "Runs a Corda Node") {
             else -> startup.initialiseAndRun(cmdLineOptions, object : RunAfterNodeInitialisation {
                 val startupTime = System.currentTimeMillis()
                 override fun run(node: Node) = startup.startNode(node, startupTime)
-            })
+            }, requireCertificates = true)
         }
     }
 }
@@ -118,7 +145,7 @@ open class NodeStartup : NodeStartupLogging {
 
     lateinit var cmdLineOptions: SharedNodeCmdLineOptions
 
-    fun initialiseAndRun(cmdLineOptions: SharedNodeCmdLineOptions, afterNodeInitialisation: RunAfterNodeInitialisation): Int {
+    fun initialiseAndRun(cmdLineOptions: SharedNodeCmdLineOptions, afterNodeInitialisation: RunAfterNodeInitialisation, requireCertificates: Boolean = false): Int {
         this.cmdLineOptions = cmdLineOptions
 
         // Step 1. Check for supported Java version.
@@ -139,23 +166,27 @@ open class NodeStartup : NodeStartupLogging {
         Node.printBasicNodeInfo(LOGS_CAN_BE_FOUND_IN_STRING, System.getProperty("log-path"))
 
         // Step 5. Load and validate node configuration.
-        val rawConfig = cmdLineOptions.rawConfiguration().doOnErrors(cmdLineOptions::logRawConfigurationErrors).optional ?: return ExitCodes.FAILURE
-        val configuration = cmdLineOptions.parseConfiguration(rawConfig).doIfValid { logRawConfig(rawConfig) }.doOnErrors(::logConfigurationErrors).optional ?: return ExitCodes.FAILURE
+        val rawConfig = cmdLineOptions.rawConfiguration().doOnErrors(cmdLineOptions::logRawConfigurationErrors).optional
+                ?: return ExitCodes.FAILURE
+        val configuration = cmdLineOptions.parseConfiguration(rawConfig).doIfValid { logRawConfig(rawConfig) }.doOnErrors(::logConfigurationErrors).optional
+                ?: return ExitCodes.FAILURE
 
-        // Step 6. Configuring special serialisation requirements, i.e., bft-smart relies on Java serialization.
-        if (attempt { banJavaSerialisation(configuration) }.doOnException { error -> error.logAsUnexpected("Exception while configuring serialisation") } !is Try.Success) return ExitCodes.FAILURE
+        // Step 6. Check if we can access the certificates directory
+        if (requireCertificates && !canReadCertificatesDirectory(configuration.certificatesDirectory, configuration.devMode)) return ExitCodes.FAILURE
 
-        // Step 7. Any actions required before starting up the Corda network layer.
-        if (attempt { preNetworkRegistration(configuration) }.doOnException(::handleRegistrationError) !is Try.Success) return ExitCodes.FAILURE
+        // Step 7. Configuring special serialisation requirements, i.e., bft-smart relies on Java serialization.
+        if (attempt { banJavaSerialisation(configuration) }.doOnFailure(Consumer { error -> error.logAsUnexpected("Exception while configuring serialisation") }) !is Try.Success) return ExitCodes.FAILURE
 
-        // Step 8. Log startup info.
+        // Step 8. Any actions required before starting up the Corda network layer.
+        if (attempt { preNetworkRegistration(configuration) }.doOnFailure(Consumer(::handleRegistrationError)) !is Try.Success) return ExitCodes.FAILURE
+
+        // Step 9. Log startup info.
         logStartupInfo(versionInfo, configuration)
 
-        // Step 9. Start node: create the node, check for other command-line options, add extra logging etc.
+        // Step 10. Start node: create the node, check for other command-line options, add extra logging etc.
         if (attempt {
-                    cmdLineOptions.baseDirectory.createDirectories()
                     afterNodeInitialisation.run(createNode(configuration, versionInfo))
-                }.doOnException(::handleStartError) !is Try.Success) return ExitCodes.FAILURE
+                }.doOnFailure(Consumer(::handleStartError)) !is Try.Success) return ExitCodes.FAILURE
 
         return ExitCodes.SUCCESS
     }
@@ -171,6 +202,10 @@ open class NodeStartup : NodeStartupLogging {
             }
         } else {
             logger.info("The Corda node is running in production mode. If this is a developer environment you can set 'devMode=true' in the node.conf file.")
+        }
+
+        if (HashAttachmentConstraint.disableHashConstraints) {
+            Node.printWarning("Hash constraints checking has been disabled by the node operator.")
         }
 
         val nodeInfo = node.start()
@@ -236,20 +271,16 @@ open class NodeStartup : NodeStartupLogging {
     open fun getVersionInfo(): VersionInfo {
         return VersionInfo(
                 PLATFORM_VERSION,
-                CordaVersionProvider.releaseVersion,
-                CordaVersionProvider.revision,
-                CordaVersionProvider.vendor
+                CordaVersion.releaseVersion,
+                CordaVersion.revision,
+                CordaVersion.vendor
         )
     }
 
     protected open fun logLoadedCorDapps(corDapps: List<CordappImpl>) {
-        fun CordappImpl.Info.description() = "$shortName version $version by $vendor"
-
-        Node.printBasicNodeInfo("Loaded ${corDapps.size} CorDapp(s)", corDapps.map { it.info }.joinToString(", ", transform = CordappImpl.Info::description))
-        corDapps.map { it.info }.filter { it.hasUnknownFields() }.let { malformed ->
-            if (malformed.isNotEmpty()) {
-                logger.warn("Found ${malformed.size} CorDapp(s) with unknown information. They will be unable to run on Corda in the future.")
-            }
+        Node.printBasicNodeInfo("Loaded ${corDapps.size} CorDapp(s)", corDapps.map { it.info }.joinToString(", "))
+        corDapps.filter { it.info.hasUnknownFields() }.forEach {
+            logger.warn("${it.info} will be unable to run on Corda in the future due to missing entries in JAR's manifest file.")
         }
     }
 
@@ -282,6 +313,20 @@ open class NodeStartup : NodeStartupLogging {
             val appUser = System.getProperty("user.name")
             println("Application user '$appUser' does not have necessary permissions for Node base directory '$baseDirectory'.")
             println("Corda Node process in now exiting. Please check directory permissions and try starting the Node again.")
+            return false
+        }
+        return true
+    }
+
+    private fun canReadCertificatesDirectory(certDirectory: Path, devMode: Boolean): Boolean {
+        //Test for access to the certificates path and shutdown if we are unable to reach it.
+        //We don't do this if devMode==true because the certificates would be created anyway
+        if (devMode) return true
+
+        if (!certDirectory.isDirectory()) {
+            printError("Unable to access certificates directory ${certDirectory}. This could be because the node has not been registered with the Identity Operator.")
+            printError("Please see https://docs.corda.net/joining-a-compatibility-zone.html for more information.")
+            printError("Node will now shutdown.")
             return false
         }
         return true
@@ -365,7 +410,8 @@ open class NodeStartup : NodeStartupLogging {
                     "When I discovered my toaster wasn't\nwaterproof, I was shocked.",
                     "Where do cryptographers go for\nentertainment? The security theatre.",
                     "How did the Java programmer get rich?\nThey inherited a factory.",
-                    "Why did the developer quit his job?\nHe didn't get ar-rays."
+                    "Why did the developer quit his job?\nHe didn't get ar-rays.",
+                    "Quantum computer jokes are both\n funny and not funny at the same time."
             )
 
             if (Emoji.hasEmojiTerminal)
@@ -397,41 +443,64 @@ interface NodeStartupLogging {
         val startupErrors = setOf(MultipleCordappsForFlowException::class, CheckpointIncompatibleException::class, AddressBindingException::class, NetworkParametersReader::class, DatabaseIncompatibleException::class)
     }
 
-    fun <RESULT> attempt(action: () -> RESULT): Try<RESULT> = Try.on(action)
+    fun <RESULT> attempt(action: () -> RESULT): Try<RESULT> = Try.on(action).throwError()
 
-    fun Exception.logAsExpected(message: String? = this.message, print: (String?) -> Unit = logger::error) = print(message)
+    fun Throwable.logAsExpected(message: String? = this.message, print: (String?) -> Unit = logger::error) = print(message)
 
-    fun Exception.logAsUnexpected(message: String? = this.message, error: Exception = this, print: (String?, Throwable) -> Unit = logger::error) = print("$message${this.message?.let { ": $it" } ?: ""}", error)
+    fun Throwable.logAsUnexpected(message: String? = this.message, error: Throwable = this, print: (String?, Throwable) -> Unit = logger::error) {
+        print("$message${this.message?.let { ": $it" } ?: ""}", error)
+    }
 
-    fun handleRegistrationError(error: Exception) {
+    fun handleRegistrationError(error: Throwable) {
         when (error) {
             is NodeRegistrationException -> error.logAsExpected("Issue with Node registration: ${error.message}")
             else -> error.logAsUnexpected("Exception during node registration")
         }
     }
 
-    fun Exception.isOpenJdkKnownIssue() = message?.startsWith("Unknown named curve:") == true
+    fun Throwable.isOpenJdkKnownIssue() = message?.startsWith("Unknown named curve:") == true
 
-    fun Exception.isExpectedWhenStartingNode() = startupErrors.any { error -> error.isInstance(this) }
+    fun Throwable.isExpectedWhenStartingNode() = startupErrors.any { error -> error.isInstance(this) }
 
-    fun handleStartError(error: Exception) {
+    fun handleStartError(error: Throwable) {
         when {
             error.isExpectedWhenStartingNode() -> error.logAsExpected()
             error is CouldNotCreateDataSourceException -> error.logAsUnexpected()
             error is Errors.NativeIoException && error.message?.contains("Address already in use") == true -> error.logAsExpected("One of the ports required by the Corda node is already in use.")
+            error is Errors.NativeIoException && error.message?.contains("Can't assign requested address") == true -> error.logAsExpected("Exception during node startup. Check that addresses in node config resolve correctly.")
+            error is UnresolvedAddressException -> error.logAsExpected("Exception during node startup. Check that addresses in node config resolve correctly.")
             error.isOpenJdkKnownIssue() -> error.logAsExpected("Exception during node startup - ${error.message}. This is a known OpenJDK issue on some Linux distributions, please use OpenJDK from zulu.org or Oracle JDK.")
             else -> error.logAsUnexpected("Exception during node startup")
         }
     }
 }
 
-fun CliWrapperBase.initLogging(baseDirectory: Path) {
+fun CliWrapperBase.initLogging(baseDirectory: Path): Boolean {
     System.setProperty("defaultLogLevel", specifiedLogLevel) // These properties are referenced from the XML config file.
     if (verbose) {
+        System.setProperty("consoleLoggingEnabled", "true")
         System.setProperty("consoleLogLevel", specifiedLogLevel)
         Node.renderBasicInfoToConsole = false
     }
+
+    //Test for access to the logging path and shutdown if we are unable to reach it.
+    val logPath = baseDirectory / NodeCliCommand.LOGS_DIRECTORY_NAME
+    try {
+        logPath.safeSymbolicRead()?.createDirectories()
+    } catch (e: IOException) {
+        printError("Unable to create logging directory ${logPath.toString()}. Node will now shutdown.")
+        return false
+    } catch (e: SecurityException) {
+        printError("Current user is unable to access logging directory ${logPath.toString()}. Node will now shutdown.")
+        return false
+    }
+    if (!logPath.isDirectory()) {
+        printError("Unable to access logging directory ${logPath.toString()}. Node will now shutdown.")
+        return false
+    }
+
     System.setProperty("log-path", (baseDirectory / NodeCliCommand.LOGS_DIRECTORY_NAME).toString())
     SLF4JBridgeHandler.removeHandlersForRootLogger() // The default j.u.l config adds a ConsoleHandler.
     SLF4JBridgeHandler.install()
+    return true
 }

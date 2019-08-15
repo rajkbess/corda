@@ -1,17 +1,18 @@
 package net.corda.node.services.keys
 
 import net.corda.core.crypto.*
-import net.corda.core.identity.PartyAndCertificate
 import net.corda.core.internal.NamedCacheFactory
+import net.corda.core.internal.toSet
 import net.corda.core.serialization.SingletonSerializeAsToken
 import net.corda.core.utilities.MAX_HASH_HEX_SIZE
 import net.corda.node.services.identity.PersistentIdentityService
+import net.corda.node.services.persistence.WritablePublicKeyToOwningIdentityCache
 import net.corda.node.utilities.AppendOnlyPersistentMap
+import net.corda.nodeapi.internal.KeyOwningIdentity
 import net.corda.nodeapi.internal.persistence.CordaPersistence
 import net.corda.nodeapi.internal.persistence.NODE_DATABASE_PREFIX
-import org.apache.commons.lang.ArrayUtils.EMPTY_BYTE_ARRAY
+import org.apache.commons.lang3.ArrayUtils.EMPTY_BYTE_ARRAY
 import org.bouncycastle.operator.ContentSigner
-import org.hibernate.annotations.Type
 import java.security.KeyPair
 import java.security.PrivateKey
 import java.security.PublicKey
@@ -25,8 +26,11 @@ import javax.persistence.*
  *
  * This class needs database transactions to be in-flight during method calls and init.
  */
-class PersistentKeyManagementService(cacheFactory: NamedCacheFactory, val identityService: PersistentIdentityService,
-                                     private val database: CordaPersistence) : SingletonSerializeAsToken(), KeyManagementServiceInternal {
+@Deprecated("Superseded by net.corda.node.services.keys.BasicHSMKeyManagementService")
+class PersistentKeyManagementService(cacheFactory: NamedCacheFactory,
+                                     override val identityService: PersistentIdentityService,
+                                     private val database: CordaPersistence,
+                                     private val pkToIdCache: WritablePublicKeyToOwningIdentityCache) : SingletonSerializeAsToken(), KeyManagementServiceInternal {
     @Entity
     @Table(name = "${NODE_DATABASE_PREFIX}our_key_pairs")
     class PersistentKey(
@@ -43,25 +47,6 @@ class PersistentKeyManagementService(cacheFactory: NamedCacheFactory, val identi
     ) {
         constructor(publicKey: PublicKey, privateKey: PrivateKey)
             : this(publicKey.toStringShort(), publicKey.encoded, privateKey.encoded)
-    }
-
-    @Entity
-    @Table(name = "pk_hash_to_ext_id_map", indexes = [Index(name = "pk_hash_to_xid_idx", columnList = "public_key_hash")])
-    class PublicKeyHashToExternalId(
-            @Id
-            @GeneratedValue
-            @Column(name = "id", unique = true, nullable = false)
-            val key: Long?,
-
-            @Column(name = "external_id", nullable = false)
-            @Type(type = "uuid-char")
-            val externalId: UUID,
-
-            @Column(name = "public_key_hash", nullable = false)
-            val publicKeyHash: String
-    ) {
-        constructor(accountId: UUID, publicKey: PublicKey)
-                : this(null, accountId, publicKey.toStringShort())
     }
 
     private companion object {
@@ -88,25 +73,22 @@ class PersistentKeyManagementService(cacheFactory: NamedCacheFactory, val identi
         initialKeyPairs.forEach { keysMap.addWithDuplicatesAllowed(it.public, it.private) }
     }
 
-    override val keys: Set<PublicKey> get() = database.transaction { keysMap.allPersisted().map { it.first }.toSet() }
+    override val keys: Set<PublicKey> get() = database.transaction { keysMap.allPersisted.use { it.map { it.first }.toSet() } }
 
     override fun filterMyKeys(candidateKeys: Iterable<PublicKey>): Iterable<PublicKey> = database.transaction {
-        identityService.stripCachedPeerKeys(candidateKeys).filter { keysMap[it] != null } // TODO: bulk cache access.
+        identityService.stripNotOurKeys(candidateKeys)
     }
 
-    override fun freshKey(): PublicKey {
+    override fun freshKeyInternal(externalId: UUID?): PublicKey {
         val keyPair = generateKeyPair()
         database.transaction {
             keysMap[keyPair.public] = keyPair.private
+            pkToIdCache[keyPair.public] = KeyOwningIdentity.fromUUID(externalId)
         }
         return keyPair.public
     }
 
-    override fun freshKeyAndCert(identity: PartyAndCertificate, revocationEnabled: Boolean): PartyAndCertificate {
-        return freshCertificate(identityService, freshKey(), identity, getSigner(identity.owningKey))
-    }
-
-    private fun getSigner(publicKey: PublicKey): ContentSigner = getSigner(getSigningKeyPair(publicKey))
+    override fun getSigner(publicKey: PublicKey): ContentSigner = getSigner(getSigningKeyPair(publicKey))
 
     //It looks for the PublicKey in the (potentially) CompositeKey that is ours, and then returns the associated PrivateKey to use in signing
     private fun getSigningKeyPair(publicKey: PublicKey): KeyPair {

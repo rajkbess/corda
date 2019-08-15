@@ -3,7 +3,9 @@ package net.corda.core.node.services
 import net.corda.core.DoNotImplement
 import net.corda.core.contracts.Attachment
 import net.corda.core.crypto.SecureHash
-import net.corda.core.node.services.vault.*
+import net.corda.core.internal.cordapp.CordappImpl.Companion.DEFAULT_CORDAPP_VERSION
+import net.corda.core.node.services.vault.AttachmentQueryCriteria
+import net.corda.core.node.services.vault.AttachmentSort
 import java.io.IOException
 import java.io.InputStream
 import java.nio.file.FileAlreadyExistsException
@@ -74,5 +76,17 @@ interface AttachmentStorage {
     fun queryAttachments(criteria: AttachmentQueryCriteria): List<AttachmentId> {
         return queryAttachments(criteria, null)
     }
+
+    /**
+     * Find the Attachment Id(s) of the contract attachments with the highest version for a given contract class name
+     * from trusted upload sources.
+     * Return highest version of both signed and unsigned attachment ids (signed first, unsigned second), otherwise return a
+     * single signed or unsigned version id, or an empty list if none meet the criteria.
+     *
+     * @param contractClassName The fully qualified name of the contract class.
+     * @param minContractVersion The minimum contract version that should be returned.
+     * @return the [AttachmentId]s of the contract attachments (signed always first in list), or an empty list if none meet the criteria.
+     */
+    fun getLatestContractAttachments(contractClassName: String, minContractVersion: Int = DEFAULT_CORDAPP_VERSION): List<AttachmentId>
 }
 

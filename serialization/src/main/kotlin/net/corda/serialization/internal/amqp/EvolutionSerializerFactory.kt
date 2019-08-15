@@ -22,9 +22,10 @@ interface EvolutionSerializerFactory {
 class EvolutionSerializationException(remoteTypeInformation: RemoteTypeInformation, reason: String)
     : NotSerializableException(
         """
-            Cannot construct evolution serializer for remote type ${remoteTypeInformation.prettyPrint(false)}
+        Cannot construct evolution serializer for remote type ${remoteTypeInformation.typeIdentifier.name}: $reason
 
-            $reason
+        Full type information:
+        ${remoteTypeInformation.prettyPrint(false)}
         """.trimIndent()
 )
 
@@ -76,7 +77,7 @@ class DefaultEvolutionSerializerFactory(
             val localClass = localProperty.type.observedType.asClass()
             val remoteClass = remoteProperty.type.typeIdentifier.getLocalType(classLoader).asClass()
 
-            if (!localClass.isAssignableFrom(remoteClass)) {
+            if (!localClass.isAssignableFrom(remoteClass) && remoteClass != localClass.kotlin.javaPrimitiveType) {
                 throw EvolutionSerializationException(this,
                         "Local type $localClass of property $name is not assignable from remote type $remoteClass")
             }
@@ -103,21 +104,15 @@ class DefaultEvolutionSerializerFactory(
     private fun RemoteTypeInformation.Composable.validateEvolvability(localProperties: Map<PropertyName, LocalPropertyInformation>) {
         val remotePropertyNames = properties.keys
         val localPropertyNames = localProperties.keys
-        val deletedProperties = remotePropertyNames - localPropertyNames
         val newProperties = localPropertyNames - remotePropertyNames
-
-        // Here is where we can exercise a veto on evolutions that remove properties.
-        if (deletedProperties.isNotEmpty() && mustPreserveDataWhenEvolving)
-            throw EvolutionSerializationException(this,
-                    "Property ${deletedProperties.first()} of remote ContractState type is not present in local type, " +
-                            "and context is configured to prevent forwards-compatible deserialization.")
 
         // Check mandatory-ness of constructor-set properties.
         newProperties.forEach { propertyName ->
             if (localProperties[propertyName]!!.mustBeProvided) throw EvolutionSerializationException(
                     this,
-                    "Mandatory property $propertyName of local type is not present in remote type - " +
-                    "did someone remove a property from the schema without considering old clients?")
+                    "Mandatory property $propertyName of local type is not present in remote type. " +
+                    "This implies the type has not evolved in a backwards compatible way. " +
+                    "Consider making $propertyName nullable in the newer version of this type.")
         }
     }
 
@@ -170,5 +165,6 @@ class DefaultEvolutionSerializerFactory(
                     this,
                     constructor,
                     properties,
-                    classLoader)
+                    classLoader,
+                    mustPreserveDataWhenEvolving)
 }

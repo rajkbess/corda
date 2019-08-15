@@ -5,10 +5,8 @@ import io.netty.channel.unix.Errors
 import net.corda.client.jackson.JacksonSupport
 import net.corda.client.rpc.CordaRPCClient
 import net.corda.client.rpc.RPCException
-import net.corda.core.internal.div
+import net.corda.client.rpc.internal.ReconnectingCordaRPCOps
 import net.corda.core.internal.errors.AddressBindingException
-import net.corda.core.internal.exists
-import net.corda.core.internal.list
 import net.corda.core.messaging.CordaRPCOps
 import net.corda.core.utilities.contextLogger
 import net.corda.webserver.WebServerConfig
@@ -30,13 +28,9 @@ import java.io.IOException
 import java.io.Writer
 import java.lang.reflect.InvocationTargetException
 import java.net.BindException
-import java.net.URL
-import java.net.URLClassLoader
 import java.nio.file.NoSuchFileException
-import java.nio.file.Path
 import java.util.*
 import javax.servlet.http.HttpServletRequest
-import kotlin.streams.toList
 
 class NodeWebServer(val config: WebServerConfig) {
     private companion object {
@@ -50,7 +44,7 @@ class NodeWebServer(val config: WebServerConfig) {
 
     fun start() {
         logAndMaybePrint("Starting as webserver: ${config.webAddress}")
-        server = initWebServer(retryConnectLocalRpc())
+        server = initWebServer(reconnectingCordaRPCOps())
     }
 
     fun run() {
@@ -182,51 +176,11 @@ class NodeWebServer(val config: WebServerConfig) {
         }
     }
 
-    private fun retryConnectLocalRpc(): CordaRPCOps {
-        while (true) {
-            try {
-                return connectLocalRpcAsNodeUser()
-            } catch (e: RPCException) {
-                log.debug("Could not connect to ${config.rpcAddress} due to exception: ", e)
-                Thread.sleep(retryDelay)
-                // This error will happen if the server has yet to create the keystore
-                // Keep the fully qualified package name due to collisions with the Kotlin stdlib
-                // exception of the same name
-            } catch (e: NoSuchFileException) {
-                log.debug("Tried to open a file that doesn't yet exist, retrying", e)
-                Thread.sleep(retryDelay)
-            } catch (e: Throwable) {
-                // E.g. a plugin cannot be instantiated?
-                // Note that we do want the exception stacktrace.
-                log.error("Cannot start WebServer", e)
-                throw e
-            }
-        }
-    }
+    private fun reconnectingCordaRPCOps() = ReconnectingCordaRPCOps(config.rpcAddress, config.runAs.username , config.runAs.password, null, javaClass.classLoader)
 
-    private fun connectLocalRpcAsNodeUser(): CordaRPCOps {
-        log.info("Connecting to node at ${config.rpcAddress} as ${config.runAs}")
-        val client = CordaRPCClient(config.rpcAddress)
-        val connection = client.start(config.runAs.username, config.runAs.password)
-        return connection.proxy
-    }
-
-
-    private fun jarUrlsInDirectory(directory: Path): List<URL> {
-        return if (!directory.exists()) {
-            emptyList()
-        } else {
-            directory.list { paths ->
-                // `toFile()` can't be used here...
-                paths.filter { it.toString().endsWith(".jar") }.map { it.toUri().toURL() }.toList()
-            }
-        }
-    }
-
-    /** Fetch WebServerPluginRegistry classes registered in META-INF/services/net.corda.webserver.services.WebServerPluginRegistry files that exist in the classpath or in cordapps */
+    /** Fetch WebServerPluginRegistry classes registered in META-INF/services/net.corda.webserver.services.WebServerPluginRegistry files that exist in the classpath */
     val pluginRegistries: List<WebServerPluginRegistry> by lazy {
-        val urls = jarUrlsInDirectory(config.baseDirectory / "cordapps").toTypedArray()
-        ServiceLoader.load(WebServerPluginRegistry::class.java, URLClassLoader(urls, javaClass.classLoader)).toList()
+        ServiceLoader.load(WebServerPluginRegistry::class.java).toList()
     }
 
     /** Used for useful info that we always want to show, even when not logging to the console */

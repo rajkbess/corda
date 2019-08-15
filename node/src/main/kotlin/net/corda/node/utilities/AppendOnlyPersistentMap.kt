@@ -7,12 +7,11 @@ import net.corda.core.utilities.contextLogger
 import net.corda.nodeapi.internal.persistence.DatabaseTransaction
 import net.corda.nodeapi.internal.persistence.contextTransaction
 import net.corda.nodeapi.internal.persistence.currentDBSession
-import java.lang.ref.WeakReference
-import java.util.HashSet
-import java.util.NoSuchElementException
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.stream.Stream
 
 /**
  * Implements a caching layer on top of an *append-only* table accessed via Hibernate mapping. Note that if the same key is [set] twice,
@@ -37,56 +36,90 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
     /**
      * Returns the value associated with the key, first loading that value from the storage if necessary.
      */
-    operator fun get(key: K): V? {
-        return cache.get(key)!!.orElse(null)
-    }
+    operator fun get(key: K): V? = cache.get(key)?.orElse(null)
 
-    val size get() = allPersisted().toList().size
+    val size: Long get() = allPersisted.use { it.count() }
 
     /**
-     * Returns all key/value pairs from the underlying storage.
+     * Returns all key/value pairs from the underlying storage in a [Stream].
+     *
+     * Make sure to close the [Stream] once it's been processed.
      */
-    fun allPersisted(): Sequence<Pair<K, V>> {
-        val session = currentDBSession()
-        val criteriaQuery = session.criteriaBuilder.createQuery(persistentEntityClass)
-        val root = criteriaQuery.from(persistentEntityClass)
-        criteriaQuery.select(root)
-        val query = session.createQuery(criteriaQuery)
-        val result = query.resultList
-        return result.map { x -> fromPersistentEntity(x) }.asSequence()
-    }
+    val allPersisted: Stream<Pair<K, V>>
+        get() {
+            val session = currentDBSession()
+            val criteriaQuery = session.criteriaBuilder.createQuery(persistentEntityClass)
+            val root = criteriaQuery.from(persistentEntityClass)
+            criteriaQuery.select(root)
+            val query = session.createQuery(criteriaQuery)
+            return query.stream().map(fromPersistentEntity)
+        }
 
     private fun set(key: K, value: V, logWarning: Boolean, store: (K, V) -> V?): Boolean {
         // Will be set to true if store says it isn't in the database.
-        var isUnique = false
-        cache.asMap().compute(key) { _, oldValue ->
+        var wasWritten = false
+        cache.asMap().compute(key) { _, oldValueInCache ->
             // Always write to the database, unless we can see it's already committed.
-            when (oldValue) {
+            when (oldValueInCache) {
                 is Transactional.InFlight<*, V> -> {
                     // Someone else is writing, so store away!
-                    // TODO: we can do collision detection here and prevent it happening in the database.  But we also have to do deadlock detection, so a bit of work.
-                    isUnique = (store(key, value) == null)
-                    oldValue.apply { alsoWrite(value) }
-                }
-                is Transactional.Committed<V> -> oldValue // The value is already globally visible and cached.  So do nothing since the values are always the same.
-                else -> {
-                    // Null or Missing.  Store away!
-                    isUnique = (store(key, value) == null)
-                    if (!isUnique && !weAreWriting(key)) {
-                        // If we found a value already in the database, and we were not already writing, then it's already committed but got evicted.
-                        Transactional.Committed(value)
+                    val retainedValueFromDB = store(key, value)
+                    wasWritten = (retainedValueFromDB == null)
+                    // If the store function claims the value is new in the DB, then either the value is brand new or updated. In this case,
+                    // update the old value in the cache with the new value. Otherwise, leave it as it was before.
+                    if (wasWritten) {
+                        oldValueInCache.apply { alsoWrite(value) }
                     } else {
-                        // Some database transactions, including us, writing, with readers seeing whatever is in the database and writers seeing the (in memory) value.
-                        Transactional.InFlight(this, key, _readerValueLoader = { loadValue(key) }).apply { alsoWrite(value) }
+                        oldValueInCache
                     }
                 }
-
+                is Transactional.Committed<V> -> if (oldValueInCache.value == value) {
+                    oldValueInCache // The value is already globally visible and cached.  So do nothing since the values are always the same.
+                } else {
+                    val retainedValueFromDB = store(key, value)
+                    wasWritten = (retainedValueFromDB == null)
+                    // If the value has been updated, then isUnique will be true. In this case, the Committed value needs to be replaced
+                    // with InFlight to indicate that this transaction has changed the value associated with this key. Note that this allows
+                    // for cases where the value passed to set differs from that in the cache, but an update function has decided that this
+                    // differing value should not be written to the database.
+                    if (wasWritten) {
+                        Transactional.InFlight(this, key, _readerValueLoader = { loadValue(key) }).apply { alsoWrite(value) }
+                    } else {
+                        oldValueInCache
+                    }
+                }
+                is Transactional.Unknown<*, V> -> {
+                    if (oldValueInCache.isResolved && oldValueInCache.isPresent) {
+                        Transactional.Committed(oldValueInCache.value)
+                    } else {
+                        // Unknown.  Store away!
+                        val retainedValueInDB = store(key, value)
+                        wasWritten = (retainedValueInDB == null)
+                        transactionalForStoreResult(key, value, retainedValueInDB)
+                    }
+                }
+                else -> {
+                    // Missing or null.  Store away!
+                    val retainedValueInDB = store(key, value)
+                    wasWritten = (retainedValueInDB == null)
+                    transactionalForStoreResult(key, value, retainedValueInDB)
+                }
             }
         }
-        if (logWarning && !isUnique) {
+        if (logWarning && !wasWritten) {
             log.warn("Double insert in ${this.javaClass.name} for entity class $persistentEntityClass key $key, not inserting the second time")
         }
-        return isUnique
+        return wasWritten
+    }
+
+    private fun transactionalForStoreResult(key: K, value: V, oldValue: V?): Transactional<V> {
+        return if ( (oldValue != null) && !weAreWriting(key)) {
+            // If we found a value already in the database, and we were not already writing, then it's already committed but got evicted.
+            Transactional.Committed(oldValue)
+        } else {
+            // Some database transactions, including us, writing, with readers seeing whatever is in the database and writers seeing the (in memory) value.
+            Transactional.InFlight(this, key, _readerValueLoader = { loadValue(key) }).apply { alsoWrite(value) }
+        }
     }
 
     /**
@@ -117,13 +150,45 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
                 }
             }
 
+    /**
+     * Associates the specified value with the specified key in this map and persists it.
+     * This function will first attempt to update the value currently in the map using the update function. If the update function returns
+     * true, this indicate that the persisted value has been updated and the corresponding cached value should also be updated. If it
+     * returns false, then this function attempts to add the value to the database, taking into account the possibility that the value
+     * already exists but an update is undesirable.
+     *
+     * @param key The key to associate the value with
+     * @param value The value to associate to the key
+     * @param updateFn A function to calculate an update to the persisted value. This should return true if the persisted value has been
+     *                 updated, and false if it has not or the value is not currently present in the database.
+     * @return true if the value was added or updated, false otherwise.
+     */
+    fun addOrUpdate(key: K, value: V, updateFn: (K, V) -> Boolean): Boolean {
+        return set(key, value, logWarning = false) { k, v ->
+            val updated = updateFn(k, v)
+            if (updated) {
+                // This needs to be null to ensure that set returns true when a value is updated.
+                null
+            } else {
+                val session = currentDBSession()
+                val existingEntry = session.find(persistentEntityClass, toPersistentEntityKey(k))
+                if (existingEntry == null) {
+                    session.save(toPersistentEntity(k, v))
+                    null
+                } else {
+                    fromPersistentEntity(existingEntry).second
+                }
+            }
+        }
+    }
+
     fun putAll(entries: Map<K, V>) {
         entries.forEach {
             set(it.key, it.value)
         }
     }
 
-    protected fun loadValue(key: K): V? {
+    private fun loadValue(key: K): V? {
         val session = currentDBSession()
         val flushing = contextTransaction.flushing
         if (!flushing) {
@@ -135,20 +200,20 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
         return result?.apply { if (!flushing) session.detach(result) }?.let(fromPersistentEntity)?.second
     }
 
-    operator fun contains(key: K) = get(key) != null
-
-    /**
-     * Allow checking the cache content without falling back to database if there's a miss.
-     *
-     * @param key The cache key
-     * @return The value in the cache, or null if not present.
-     */
-    fun getIfCached(key: K): V? {
-        val transactional = cache.getIfPresent(key!!)
-        return if (transactional?.isPresent ?: false) {
-            transactional?.value
-        } else null
+    protected fun transactionalLoadValue(key: K): Transactional<V> {
+        // This gets called if a value is read and the cache has no Transactional for this key yet.
+        return if (anyoneWriting(key)) {
+            // If someone is writing (but not us)
+            // For those not writing, they need to re-load the value from the database (which their database transaction MIGHT see).
+            // For those writing, they need to re-load the value from the database (which their database transaction CAN see).
+            Transactional.InFlight(this, key, { loadValue(key) }, { loadValue(key)!! })
+        } else {
+            // If no one is writing, then the value may or may not exist in the database.
+            Transactional.Unknown(this, key) { loadValue(key) }
+        }
     }
+
+    operator fun contains(key: K) = get(key) != null
 
     /**
      * Removes all of the mappings from this map and underlying storage. The map will be empty after this call returns.
@@ -163,8 +228,9 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
     }
 
     // Helpers to know if transaction(s) are currently writing the given key.
-    protected fun weAreWriting(key: K): Boolean = pendingKeys[key]?.contains(contextTransaction) ?: false
-    protected fun anyoneWriting(key: K): Boolean = pendingKeys[key]?.isNotEmpty() ?: false
+    private fun weAreWriting(key: K): Boolean = pendingKeys[key]?.contains(contextTransaction) ?: false
+
+    private fun anyoneWriting(key: K): Boolean = pendingKeys[key]?.isNotEmpty() ?: false
 
     // Indicate this database transaction is a writer of this key.
     private fun addPendingKey(key: K, databaseTransaction: DatabaseTransaction): Boolean {
@@ -203,7 +269,7 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
     sealed class Transactional<T> {
         abstract val value: T
         abstract val isPresent: Boolean
-        abstract val valueWithoutIsolation: T?
+        abstract val peekableValue: T?
 
         fun orElse(alt: T?) = if (isPresent) value else alt
 
@@ -211,7 +277,7 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
         class Committed<T>(override val value: T) : Transactional<T>() {
             override val isPresent: Boolean
                 get() = true
-            override val valueWithoutIsolation: T?
+            override val peekableValue: T?
                 get() = value
         }
 
@@ -221,8 +287,30 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
                 get() = throw NoSuchElementException("Not present")
             override val isPresent: Boolean
                 get() = false
-            override val valueWithoutIsolation: T?
+            override val peekableValue: T?
                 get() = null
+        }
+
+        // No one is writing, but we haven't looked in the database yet.  This can only be when there are no writers.
+        class Unknown<K, T>(private val map: AppendOnlyPersistentMapBase<K, T, *, *>,
+                            private val key: K,
+                            private val _valueLoader: () -> T?) : Transactional<T>() {
+            override val value: T
+                get() = valueWithoutIsolationDelegate.value ?: throw NoSuchElementException("Not present")
+            override val isPresent: Boolean
+                get() = valueWithoutIsolationDelegate.value != null
+            private val valueWithoutIsolationDelegate = lazy(LazyThreadSafetyMode.PUBLICATION) {
+                val readValue = _valueLoader()
+                // We re-write the value into the cache so that any weigher can re-assess the weight based on the loaded value.
+                map.cache.asMap().compute(key) { _, oldValue ->
+                    if (oldValue === this@Unknown) {
+                        if (readValue == null) Missing() else Committed(readValue)
+                    } else oldValue
+                }
+                readValue
+            }
+            val isResolved: Boolean get() = valueWithoutIsolationDelegate.isInitialized()
+            override val peekableValue: T? get() = if (isResolved && isPresent) value else null
         }
 
         // Written in a transaction (uncommitted) somewhere, but there's a small window when this might be seen after commit,
@@ -251,17 +339,22 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
                 // retaining what could be a large memory footprint object.
                 val tx = contextTransaction
                 val strongKey = key
-                val weakValue = WeakReference<T>(_value)
-                val strongComitted = committed
                 val strongMap = map
                 if (map.addPendingKey(key, tx)) {
                     // If the transaction commits, update cache to make globally visible if we're first for this key,
                     // and then stop saying the transaction is writing the key.
                     tx.onCommit {
-                        if (strongComitted.compareAndSet(false, true)) {
-                            val dereferencedValue = weakValue.get()
-                            if (dereferencedValue != null) {
-                                strongMap.cache.put(strongKey, Committed(dereferencedValue))
+                        strongMap.cache.asMap().computeIfPresent(strongKey) { _, transactional: Transactional<T> ->
+                            if (transactional is Transactional.InFlight<*, T>) {
+                                transactional.committed.set(true)
+                                val value = transactional.peekableValue
+                                if (value != null) {
+                                    Transactional.Committed(value)
+                                } else {
+                                    transactional
+                                }
+                            } else {
+                                transactional
                             }
                         }
                         strongMap.removePendingKey(strongKey, tx)
@@ -276,21 +369,21 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
             // Lazy load the value a "writer" would see.  If the original loader hasn't been replaced, replace it
             // with one that just returns the value once evaluated.
             private fun loadAsWriter(): T {
-                val _value = writerValueLoader.get()()
+                val writerValue = writerValueLoader.get()()
                 if (writerValueLoader.get() == _writerValueLoader) {
-                    writerValueLoader.set { _value }
+                    writerValueLoader.set { writerValue }
                 }
-                return _value
+                return writerValue
             }
 
             // Lazy load the value a "reader" would see.  If the original loader hasn't been replaced, replace it
             // with one that just returns the value once evaluated.
             private fun loadAsReader(): T? {
-                val _value = readerValueLoader.get()()
+                val readerValue = readerValueLoader.get()()
                 if (readerValueLoader.get() == _readerValueLoader) {
-                    readerValueLoader.set { _value }
+                    readerValueLoader.set { readerValue }
                 }
-                return _value
+                return readerValue
             }
 
             // Whether someone reading (only) can see the entry.
@@ -307,8 +400,8 @@ abstract class AppendOnlyPersistentMapBase<K, V, E, out EK>(
                 get() = if (isPresentAsWriter) loadAsWriter() else if (isPresentAsReader) loadAsReader()!! else throw NoSuchElementException("Not present")
 
             // The value from the perspective of the eviction algorithm of the cache.  i.e. we want to reveal memory footprint to it etc.
-            override val valueWithoutIsolation: T?
-                get() = if (writerValueLoader.get() != _writerValueLoader) writerValueLoader.get()() else if (readerValueLoader.get() != _writerValueLoader) readerValueLoader.get()() else null
+            override val peekableValue: T?
+                get() = if (writerValueLoader.get() != _writerValueLoader) writerValueLoader.get()() else if (readerValueLoader.get() != _readerValueLoader) readerValueLoader.get()() else null
         }
     }
 }
@@ -329,33 +422,7 @@ open class AppendOnlyPersistentMap<K, V, E, out EK>(
     override val cache = NonInvalidatingCache(
             cacheFactory = cacheFactory,
             name = name,
-            loadFunction = { key: K ->
-                // This gets called if a value is read and the cache has no Transactional for this key yet.
-                val value: V? = loadValue(key)
-                if (value == null) {
-                    // No visible value
-                    if (anyoneWriting(key)) {
-                        // If someone is writing (but not us)
-                        // For those not writing, the value cannot be seen.
-                        // For those writing, they need to re-load the value from the database (which their database transaction CAN see).
-                        Transactional.InFlight(this, key, { null }, { loadValue(key)!! })
-                    } else {
-                        // If no one is writing, then the value does not exist.
-                        Transactional.Missing()
-                    }
-                } else {
-                    // A value was found
-                    if (weAreWriting(key)) {
-                        // If we are writing, it might not be globally visible, and was evicted from the cache.
-                        // For those not writing, they need to check the database again.
-                        // For those writing, they can see the value found.
-                        Transactional.InFlight(this, key, { loadValue(key) }, { value })
-                    } else {
-                        // If no one is writing, then make it globally visible.
-                        Transactional.Committed(value)
-                    }
-                }
-            })
+            loadFunction = { key: K -> transactionalLoadValue(key) })
 }
 
 // Same as above, but with weighted values (e.g. memory footprint sensitive).
@@ -376,20 +443,5 @@ class WeightBasedAppendOnlyPersistentMap<K, V, E, out EK>(
             cacheFactory = cacheFactory,
             name = name,
             weigher = Weigher { key, value -> weighingFunc(key, value) },
-            loadFunction = { key: K ->
-                val value: V? = loadValue(key)
-                if (value == null) {
-                    if (anyoneWriting(key)) {
-                        Transactional.InFlight(this, key, { null }, { loadValue(key)!! })
-                    } else {
-                        Transactional.Missing()
-                    }
-                } else {
-                    if (weAreWriting(key)) {
-                        Transactional.InFlight(this, key, { loadValue(key) }, { value })
-                    } else {
-                        Transactional.Committed(value)
-                    }
-                }
-            })
+            loadFunction = { key: K -> transactionalLoadValue(key) })
 }

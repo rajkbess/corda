@@ -38,8 +38,8 @@ interface ServicesForResolution {
     /** Provides access to anything relating to cordapps including contract attachment resolution and app context */
     val cordappProvider: CordappProvider
 
-    /** Provides access to storage of historical network parameters that are used in transaction resolution */
-    val networkParametersStorage: NetworkParametersStorage
+    /** Provides access to historical network parameters that are used in transaction resolution. */
+    val networkParametersService: NetworkParametersService
 
     /** Returns the network parameters the node is operating under. */
     val networkParameters: NetworkParameters
@@ -55,6 +55,7 @@ interface ServicesForResolution {
      */
     @Throws(TransactionResolutionException::class)
     fun loadState(stateRef: StateRef): TransactionState<*>
+
     /**
      * Given a [Set] of [StateRef]'s loads the referenced transaction and looks up the specified output [ContractState].
      *
@@ -64,6 +65,12 @@ interface ServicesForResolution {
     // as the existing transaction store will become encrypted at some point
     @Throws(TransactionResolutionException::class)
     fun loadStates(stateRefs: Set<StateRef>): Set<StateAndRef<ContractState>>
+
+    /**
+     * Returns the [Attachment] that defines the given [StateRef], which must be in the visible subset of the ledger.
+     */
+    @Throws(TransactionResolutionException::class, AttachmentResolutionException::class)
+    fun loadContractAttachment(stateRef: StateRef): Attachment
 }
 
 /**
@@ -356,7 +363,7 @@ interface ServiceHub : ServicesForResolution {
      * and thus queryable data will include everything committed as of the last checkpoint.
      *
      * @throws IllegalStateException if called outside of a transaction.
-     * @return A new [Connection]
+     * @return A [Connection]
      */
     fun jdbcSession(): Connection
 

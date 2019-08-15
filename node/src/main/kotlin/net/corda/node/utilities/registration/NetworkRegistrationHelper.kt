@@ -7,8 +7,9 @@ import net.corda.core.internal.*
 import net.corda.core.utilities.contextLogger
 import net.corda.node.NodeRegistrationOption
 import net.corda.node.services.config.NodeConfiguration
-import net.corda.node.services.keys.cryptoservice.BCCryptoService
+import net.corda.nodeapi.internal.cryptoservice.bouncycastle.BCCryptoService
 import net.corda.nodeapi.internal.config.CertificateStore
+import net.corda.nodeapi.internal.config.MutualSslConfiguration
 import net.corda.nodeapi.internal.crypto.CertificateType
 import net.corda.nodeapi.internal.crypto.NOT_YET_REGISTERED_MARKER_KEYS_AND_CERTS
 import net.corda.nodeapi.internal.crypto.X509KeyStore
@@ -17,6 +18,9 @@ import net.corda.nodeapi.internal.crypto.X509Utilities.CORDA_CLIENT_CA
 import net.corda.nodeapi.internal.crypto.X509Utilities.CORDA_CLIENT_TLS
 import net.corda.nodeapi.internal.crypto.X509Utilities.CORDA_ROOT_CA
 import net.corda.nodeapi.internal.crypto.X509Utilities.DEFAULT_VALIDITY_WINDOW
+import net.corda.nodeapi.internal.cryptoservice.CryptoServiceFactory
+import net.corda.nodeapi.internal.cryptoservice.SupportedCryptoServices
+import net.corda.nodeapi.internal.cryptoservice.CryptoService
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter
 import org.bouncycastle.operator.ContentSigner
@@ -24,6 +28,7 @@ import org.bouncycastle.util.io.pem.PemObject
 import java.io.IOException
 import java.io.StringWriter
 import java.net.ConnectException
+import java.net.URL
 import java.nio.file.Path
 import java.security.KeyPair
 import java.security.PublicKey
@@ -37,13 +42,15 @@ import javax.security.auth.x500.X500Principal
  * needed.
  */
 open class NetworkRegistrationHelper(
-        config: NodeConfiguration,
+        config: NodeRegistrationConfiguration,
         private val certService: NetworkRegistrationService,
         private val networkRootTrustStorePath: Path,
         networkRootTrustStorePassword: String,
         private val nodeCaKeyAlias: String,
         private val certRole: CertRole,
-        private val nextIdleDuration: (Duration?) -> Duration? = FixedPeriodLimitedRetrialStrategy(10, Duration.ofMinutes(1))
+        private val nextIdleDuration: (Duration?) -> Duration? = FixedPeriodLimitedRetrialStrategy(10, Duration.ofMinutes(1)),
+        protected val logProgress: (String) -> Unit = ::println,
+        protected val logError: (String) -> Unit = System.err::println
 ) {
 
     companion object {
@@ -53,8 +60,8 @@ open class NetworkRegistrationHelper(
     private val certificatesDirectory: Path = config.certificatesDirectory
     private val myLegalName: CordaX500Name = config.myLegalName
     private val emailAddress: String = config.emailAddress
-    private val cryptoService = config.makeCryptoService()
-    private val certificateStore = config.signingCertificateStore.get(true)
+    private val cryptoService = config.cryptoService
+    private val certificateStore = config.certificateStore
     private val requestIdStore = certificatesDirectory / "certificate-request-id.txt"
     protected val rootTrustStore: X509KeyStore
     protected val rootCert: X509Certificate
@@ -86,7 +93,7 @@ open class NetworkRegistrationHelper(
 
         // SELF_SIGNED_PRIVATE_KEY is used as progress indicator.
         if (certStore.contains(nodeCaKeyAlias) && !certStore.contains(SELF_SIGNED_PRIVATE_KEY)) {
-            println("Certificate already exists, Corda node will now terminate...")
+            logProgress("Certificate already exists, Corda node will now terminate...")
             return
         }
 
@@ -106,7 +113,7 @@ open class NetworkRegistrationHelper(
         certStore.setCertPathOnly(nodeCaKeyAlias, nodeCaCertificates)
         certStore.value.internal.deleteEntry(SELF_SIGNED_PRIVATE_KEY)
         certStore.value.save()
-        println("Private key '$nodeCaKeyAlias' and its certificate-chain stored successfully.")
+        logProgress("Private key '$nodeCaKeyAlias' and its certificate-chain stored successfully.")
 
         onSuccess(nodeCaPublicKey, cryptoService.getSigner(nodeCaKeyAlias), nodeCaCertificates, tlsCrlIssuerCert?.subjectX500Principal?.toX500Name())
         // All done, clean up temp files.
@@ -124,9 +131,9 @@ open class NetworkRegistrationHelper(
     private fun getTlsCrlIssuerCert(): X509Certificate? {
         val tlsCrlIssuerCert = validateAndGetTlsCrlIssuerCert()
         if (tlsCrlIssuerCert == null && isTlsCrlIssuerCertRequired()) {
-            System.err.println("""tlsCrlIssuerCert config does not match the root certificate issuer and nor is there any other certificate in the trust store with a matching issuer.
+            logError("""tlsCrlIssuerCert config does not match the root certificate issuer and nor is there any other certificate in the trust store with a matching issuer.
                     | Please make sure the config is correct or that the correct certificate for the CRL issuer is added to the node's trust store.
-                    | The node will now terminate.""".trimMargin())
+                    | The node registration will now terminate.""".trimMargin())
             throw IllegalArgumentException("TLS CRL issuer certificate not found in the trust store.")
         }
         return tlsCrlIssuerCert
@@ -161,7 +168,7 @@ open class NetworkRegistrationHelper(
 
         // Validate certificate chain returned from the doorman with the root cert obtained via out-of-band process, to prevent MITM attack on doorman server.
         X509Utilities.validateCertificateChain(rootCert, certificates)
-        println("Certificate signing request approved, storing private key with the certificate chain.")
+        logProgress("Certificate signing request approved, storing private key with the certificate chain.")
     }
 
     private fun CertificateStore.loadOrCreateKeyPair(alias: String, entryPassword: String = password): KeyPair {
@@ -188,7 +195,7 @@ open class NetworkRegistrationHelper(
      */
     private fun pollServerForCertificates(requestId: String): List<X509Certificate> {
         try {
-            println("Start polling server for certificate signing approval.")
+            logProgress("Start polling server for certificate signing approval.")
             // Poll server to download the signed certificate once request has been approved.
             var idlePeriodDuration: Duration? = null
             while (true) {
@@ -209,9 +216,9 @@ open class NetworkRegistrationHelper(
                 }
             }
         } catch (certificateRequestException: CertificateRequestException) {
-            System.err.println(certificateRequestException.message)
-            System.err.println("Please make sure the details in configuration file are correct and try again.")
-            System.err.println("Corda node will now terminate.")
+            certificateRequestException.message?.let { logError(it) }
+            logError("Please make sure the details in configuration file are correct and try again.")
+            logError("Corda node registration will now terminate.")
             requestIdStore.deleteIfExists()
             throw certificateRequestException
         }
@@ -233,24 +240,21 @@ open class NetworkRegistrationHelper(
                 JcaPEMWriter(writer).use {
                     it.writeObject(PemObject("CERTIFICATE REQUEST", request.encoded))
                 }
-                println("Certificate signing request with the following information will be submitted to the Corda certificate signing server.")
-                println()
-                println("Legal Name: $myLegalName")
-                println("Email: $emailAddress")
-                println()
-                println("Public Key: $publicKey")
-                println()
-                println("$writer")
+                logProgress("Certificate signing request with the following information will be submitted to the Corda certificate signing server.")
+                logProgress("Legal Name: $myLegalName")
+                logProgress("Email: $emailAddress")
+                logProgress("Public Key: $publicKey")
+                logProgress("$writer")
                 // Post request to signing server via http.
-                println("Submitting certificate signing request to Corda certificate signing server.")
+                logProgress("Submitting certificate signing request to Corda certificate signing server.")
                 val requestId = certService.submitRequest(request)
                 // Persists request ID to file in case of node shutdown.
                 requestIdStore.writeLines(listOf(requestId))
-                println("Successfully submitted request to Corda certificate signing server, request ID: $requestId.")
+                logProgress("Successfully submitted request to Corda certificate signing server, request ID: $requestId.")
                 requestId
             } else {
                 val requestId = requestIdStore.readLines { it.findFirst().get() }
-                println("Resuming from previous certificate signing request, request ID: $requestId.")
+                logProgress("Resuming from previous certificate signing request, request ID: $requestId.")
                 requestId
             }
         } catch (e: Exception) {
@@ -267,22 +271,55 @@ open class NetworkRegistrationHelper(
     protected open fun isTlsCrlIssuerCertRequired(): Boolean = false
 }
 
+class NodeRegistrationConfiguration (
+        val p2pSslOptions: MutualSslConfiguration,
+        val myLegalName : CordaX500Name,
+        val tlsCertCrlIssuer : X500Principal?,
+        val tlsCertCrlDistPoint: URL?,
+        val certificatesDirectory: Path,
+        val emailAddress: String,
+        val cryptoService: CryptoService,
+        val certificateStore: CertificateStore) {
+
+    constructor(config: NodeConfiguration) : this(
+            p2pSslOptions = config.p2pSslOptions,
+            myLegalName = config.myLegalName,
+            tlsCertCrlIssuer = config.tlsCertCrlIssuer,
+            tlsCertCrlDistPoint = config.tlsCertCrlDistPoint,
+            certificatesDirectory = config.certificatesDirectory,
+            emailAddress = config.emailAddress,
+            cryptoService = CryptoServiceFactory.makeCryptoService(SupportedCryptoServices.BC_SIMPLE, config.myLegalName, config.signingCertificateStore),
+            certificateStore = config.signingCertificateStore.get(true)
+    )
+}
+
 class NodeRegistrationException(
         message: String?,
         cause: Throwable?
 ) : IOException(message ?: "Unable to contact node registration service", cause)
 
 class NodeRegistrationHelper(
-        private val config: NodeConfiguration,
-        certService: NetworkRegistrationService, regConfig: NodeRegistrationOption, computeNextIdleDoormanConnectionPollInterval: (Duration?) -> Duration? = FixedPeriodLimitedRetrialStrategy(10, Duration.ofMinutes(1))) :
-        NetworkRegistrationHelper(
-                config,
-                certService,
-                regConfig.networkRootTrustStorePath,
-                regConfig.networkRootTrustStorePassword,
-                CORDA_CLIENT_CA,
-                CertRole.NODE_CA,
-                computeNextIdleDoormanConnectionPollInterval) {
+        private val config: NodeRegistrationConfiguration,
+        certService: NetworkRegistrationService,
+        regConfig: NodeRegistrationOption,
+        computeNextIdleDoormanConnectionPollInterval: (Duration?) -> Duration? = FixedPeriodLimitedRetrialStrategy(10, Duration.ofMinutes(1)),
+        logProgress: (String) -> Unit = ::println,
+        logError: (String) -> Unit = System.err::println) :
+            NetworkRegistrationHelper(
+                    config,
+                    certService,
+                    regConfig.networkRootTrustStorePath,
+                    regConfig.networkRootTrustStorePassword,
+                    CORDA_CLIENT_CA,
+                    CertRole.NODE_CA,
+                    computeNextIdleDoormanConnectionPollInterval, logProgress, logError) {
+
+    @Deprecated("Prefer to use NodeRegistrationConfiguration instead of NodeConfiguration")
+    constructor(
+            config: NodeConfiguration,
+            certService: NetworkRegistrationService,
+            regConfig: NodeRegistrationOption
+    ) : this(NodeRegistrationConfiguration(config), certService, regConfig)
 
     companion object {
         val logger = contextLogger()
@@ -297,7 +334,7 @@ class NodeRegistrationHelper(
         val keyStore = config.p2pSslOptions.keyStore
         val certificateStore = keyStore.get(createNew = true)
         certificateStore.update {
-            println("Generating SSL certificate for node messaging service.")
+            logProgress("Generating SSL certificate for node messaging service.")
             val sslKeyPair = Crypto.generateKeyPair(X509Utilities.DEFAULT_TLS_SIGNATURE_SCHEME)
             val issuerCertificate = nodeCaCertificateChain.first()
             val validityWindow = X509Utilities.getCertificateValidityWindow(DEFAULT_VALIDITY_WINDOW.first, DEFAULT_VALIDITY_WINDOW.second, issuerCertificate)
@@ -319,7 +356,7 @@ class NodeRegistrationHelper(
             X509Utilities.validateCertificateChain(rootCert, sslCertificateChain)
             setPrivateKey(CORDA_CLIENT_TLS, sslKeyPair.private, sslCertificateChain, keyStore.entryPassword)
         }
-        println("SSL private key and certificate chain stored in ${keyStore.path}.")
+        logProgress("SSL private key and certificate chain stored in ${keyStore.path}.")
     }
 
     private fun createTruststore(rootCertificate: X509Certificate) {
@@ -328,7 +365,7 @@ class NodeRegistrationHelper(
             if (this.aliases().hasNext()) {
                 logger.warn("The node's trust store already exists. The following certificates will be overridden: ${this.aliases().asSequence()}")
             }
-            println("Generating trust store for corda node.")
+            logProgress("Generating trust store for corda node.")
             // Assumes certificate chain always starts with client certificate and end with root certificate.
             setCertificate(CORDA_ROOT_CA, rootCertificate)
             // Copy remaining certificates from the network-trust-store
@@ -338,7 +375,7 @@ class NodeRegistrationHelper(
                 setCertificate(it, certificate)
             }
         }
-        println("Node trust store stored in ${config.p2pSslOptions.trustStore.path}.")
+        logProgress("Node trust store stored in ${config.p2pSslOptions.trustStore.path}.")
     }
 
     override fun validateAndGetTlsCrlIssuerCert(): X509Certificate? {

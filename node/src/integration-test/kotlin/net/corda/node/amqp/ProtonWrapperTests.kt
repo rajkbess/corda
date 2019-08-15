@@ -17,13 +17,13 @@ import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.P2P_PREFIX
 import net.corda.nodeapi.internal.ArtemisTcpTransport
 import net.corda.nodeapi.internal.config.MutualSslConfiguration
 import net.corda.nodeapi.internal.crypto.X509Utilities
+import net.corda.nodeapi.internal.installDevNodeCaCertPath
 import net.corda.nodeapi.internal.protonwrapper.messages.MessageStatus
 import net.corda.nodeapi.internal.protonwrapper.netty.AMQPClient
 import net.corda.nodeapi.internal.protonwrapper.netty.AMQPConfiguration
 import net.corda.nodeapi.internal.protonwrapper.netty.AMQPServer
 import net.corda.nodeapi.internal.protonwrapper.netty.init
 import net.corda.nodeapi.internal.registerDevP2pCertificates
-import net.corda.nodeapi.internal.registerDevSigningCertificates
 import net.corda.testing.core.ALICE_NAME
 import net.corda.testing.core.BOB_NAME
 import net.corda.testing.core.CHARLIE_NAME
@@ -49,7 +49,7 @@ class ProtonWrapperTests {
     @JvmField
     val temporaryFolder = TemporaryFolder()
 
-    private val portAllocation = incrementalPortAllocation(10000)
+    private val portAllocation = incrementalPortAllocation() // use 15000 to move us out of harms way
     private val serverPort = portAllocation.nextPort()
     private val serverPort2 = portAllocation.nextPort()
     private val artemisPort = portAllocation.nextPort()
@@ -91,8 +91,7 @@ class ProtonWrapperTests {
 
     @Test
     fun `AMPQ Client fails to connect when crl soft fail check is disabled`() {
-        val amqpServer = createServer(serverPort, CordaX500Name("Rogue 1", "London", "GB"),
-                maxMessageSize = MAX_MESSAGE_SIZE, crlCheckSoftFail = false)
+        val amqpServer = createServer(serverPort, maxMessageSize = MAX_MESSAGE_SIZE, crlCheckSoftFail = false)
         amqpServer.use {
             amqpServer.start()
             val amqpClient = createClient()
@@ -134,7 +133,7 @@ class ProtonWrapperTests {
         val (rootCa, intermediateCa) = createDevIntermediateCaCertPath()
 
         // Generate server cert and private key and populate another keystore suitable for SSL
-        signingCertificateStore.get(true).also { it.registerDevSigningCertificates(ALICE_NAME, rootCa.certificate, intermediateCa) }
+        signingCertificateStore.get(true).also { it.installDevNodeCaCertPath(ALICE_NAME, rootCa.certificate, intermediateCa) }
         sslConfig.keyStore.get(true).also { it.registerDevP2pCertificates(ALICE_NAME, rootCa.certificate, intermediateCa) }
         sslConfig.createTrustStore(rootCa.certificate)
 
@@ -207,9 +206,10 @@ class ProtonWrapperTests {
         val amqpServer2 = createServer(serverPort2)
         val amqpClient = createClient()
         try {
-            val serverConnected = amqpServer.onConnection.toFuture()
-            val serverConnected2 = amqpServer2.onConnection.toFuture()
-            val clientConnected = amqpClient.onConnection.toBlocking().iterator
+            // The filter here is to prevent rogue RPC clients from messing us up
+            val serverConnected = amqpServer.onConnection.filter { it.remoteCert != null }.toFuture()
+            val serverConnected2 = amqpServer2.onConnection.filter { it.remoteCert != null }.toFuture()
+            val clientConnected = amqpClient.onConnection.filter { it.remoteCert != null }.toBlocking().iterator
             amqpServer.start()
             amqpClient.start()
             val serverConn1 = serverConnected.get()
@@ -447,6 +447,7 @@ class ProtonWrapperTests {
             override val trustStore = clientTruststore
             override val trace: Boolean = true
             override val maxMessageSize: Int = maxMessageSize
+            override val crlCheckSoftFail: Boolean = clientConfig.crlCheckSoftFail
         }
         return AMQPClient(
                 listOf(NetworkHostAndPort("localhost", serverPort),
@@ -478,6 +479,7 @@ class ProtonWrapperTests {
             override val trustStore = clientTruststore
             override val trace: Boolean = true
             override val maxMessageSize: Int = maxMessageSize
+            override val crlCheckSoftFail: Boolean = clientConfig.crlCheckSoftFail
         }
         return AMQPClient(
                 listOf(NetworkHostAndPort("localhost", serverPort)),
@@ -511,6 +513,7 @@ class ProtonWrapperTests {
             override val trustStore = serverTruststore
             override val trace: Boolean = true
             override val maxMessageSize: Int = maxMessageSize
+            override val crlCheckSoftFail: Boolean = serverConfig.crlCheckSoftFail
         }
         return AMQPServer(
                 "0.0.0.0",

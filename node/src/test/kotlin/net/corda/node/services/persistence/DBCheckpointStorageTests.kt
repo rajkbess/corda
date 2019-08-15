@@ -22,8 +22,8 @@ import net.corda.testing.internal.LogHelper
 import net.corda.testing.internal.configureDatabase
 import net.corda.testing.node.MockServices
 import net.corda.testing.node.MockServices.Companion.makeTestDataSourceProperties
-import org.assertj.core.api.Assertions
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -31,8 +31,9 @@ import org.junit.Test
 import kotlin.streams.toList
 
 internal fun CheckpointStorage.checkpoints(): List<SerializedBytes<Checkpoint>> {
-    val checkpoints = getAllCheckpoints().toList()
-    return checkpoints.map { it.second }
+    return getAllCheckpoints().use {
+        it.map { it.second }.toList()
+    }
 }
 
 class DBCheckpointStorageTests {
@@ -171,7 +172,7 @@ class DBCheckpointStorageTests {
             checkpointStorage.addCheckpoint(id1, checkpoint1)
         }
 
-        Assertions.assertThatThrownBy {
+        assertThatThrownBy {
             database.transaction {
                 CheckpointVerifier.verifyCheckpointsCompatible(checkpointStorage, emptyList(), 1, mockServices, emptyList())
             }
@@ -190,7 +191,8 @@ class DBCheckpointStorageTests {
             override fun call() {}
         }
         val frozenLogic = logic.checkpointSerialize(context = CheckpointSerializationDefaults.CHECKPOINT_CONTEXT)
-        val checkpoint = Checkpoint.create(InvocationContext.shell(), FlowStart.Explicit, logic.javaClass, frozenLogic, ALICE, SubFlowVersion.CoreFlow(version)).getOrThrow()
+        val checkpoint = Checkpoint.create(InvocationContext.shell(), FlowStart.Explicit, logic.javaClass, frozenLogic, ALICE, SubFlowVersion.CoreFlow(version), false)
+                .getOrThrow()
         return id to checkpoint.checkpointSerialize(context = CheckpointSerializationDefaults.CHECKPOINT_CONTEXT)
     }
 

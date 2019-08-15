@@ -8,9 +8,7 @@ import net.corda.core.contracts.ComponentGroupEnum.COMMANDS_GROUP
 import net.corda.core.contracts.ComponentGroupEnum.OUTPUTS_GROUP
 import net.corda.core.crypto.*
 import net.corda.core.identity.Party
-import net.corda.core.internal.Emoji
-import net.corda.core.internal.SerializedStateAndRef
-import net.corda.core.internal.createComponentGroups
+import net.corda.core.internal.*
 import net.corda.core.node.NetworkParameters
 import net.corda.core.node.ServiceHub
 import net.corda.core.node.ServicesForResolution
@@ -19,7 +17,6 @@ import net.corda.core.serialization.CordaSerializable
 import net.corda.core.serialization.SerializedBytes
 import net.corda.core.serialization.serialize
 import net.corda.core.utilities.OpaqueBytes
-import net.corda.core.utilities.lazyMapped
 import java.security.PublicKey
 import java.security.SignatureException
 import java.util.function.Predicate
@@ -50,7 +47,7 @@ import java.util.function.Predicate
  */
 @CordaSerializable
 @KeepForDJVM
-class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: PrivacySalt) : TraversableTransaction(componentGroups) {
+class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: PrivacySalt = PrivacySalt()) : TraversableTransaction(componentGroups) {
     @DeleteForDJVM
     constructor(componentGroups: List<ComponentGroup>) : this(componentGroups, PrivacySalt())
 
@@ -107,38 +104,74 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
                 resolveAttachment = { services.attachments.openAttachment(it) },
                 resolveStateRefAsSerialized = { resolveStateRefBinaryComponent(it, services) },
                 resolveParameters = {
-                    val hashToResolve = it ?: services.networkParametersStorage.defaultHash
-                    services.networkParametersStorage.lookup(hashToResolve)
-                }
+                    val hashToResolve = it ?: services.networkParametersService.defaultHash
+                    services.networkParametersService.lookup(hashToResolve)
+                },
+                resolveContractAttachment = { services.loadContractAttachment(it) },
+                isAttachmentTrusted = { isAttachmentTrusted(it, services.attachments) }
         )
+    }
+
+    // Helper for deprecated toLedgerTransaction
+    // TODO: revisit once Deterministic JVM code updated
+    private val missingAttachment: Attachment by lazy {
+        object : AbstractAttachment({ byteArrayOf() }, DEPLOYED_CORDAPP_UPLOADER ) {
+            override val id: SecureHash get() = throw UnsupportedOperationException()
+        }
     }
 
     /**
      * Looks up identities, attachments and dependent input states using the provided lookup functions in order to
      * construct a [LedgerTransaction]. Note that identity lookup failure does *not* cause an exception to be thrown.
+     * This invocation doesn't check various rules like no-downgrade or package namespace ownership.
      *
      * @throws AttachmentResolutionException if a required attachment was not found using [resolveAttachment].
      * @throws TransactionResolutionException if an input was not found not using [resolveStateRef].
      */
     @Deprecated("Use toLedgerTransaction(ServicesForTransaction) instead")
     @Throws(AttachmentResolutionException::class, TransactionResolutionException::class)
-    @JvmOverloads
     fun toLedgerTransaction(
             resolveIdentity: (PublicKey) -> Party?,
             resolveAttachment: (SecureHash) -> Attachment?,
             resolveStateRef: (StateRef) -> TransactionState<*>?,
-            @Suppress("UNUSED_PARAMETER") resolveContractAttachment: (TransactionState<ContractState>) -> AttachmentId?,
-            resolveParameters: (SecureHash?) -> NetworkParameters? = { null } // TODO This { null } is left here only because of API stability. It doesn't make much sense anymore as it will fail on transaction verification.
+            @Suppress("UNUSED_PARAMETER") resolveContractAttachment: (TransactionState<ContractState>) -> AttachmentId?
     ): LedgerTransaction {
         // This reverts to serializing the resolved transaction state.
-        return toLedgerTransactionInternal(resolveIdentity, resolveAttachment, { stateRef -> resolveStateRef(stateRef)?.serialize() }, resolveParameters)
+        return toLedgerTransactionInternal(
+                resolveIdentity,
+                resolveAttachment,
+                { stateRef -> resolveStateRef(stateRef)?.serialize() },
+                { null },
+                // Returning a dummy `missingAttachment` Attachment allows this deprecated method to work and it disables "contract version no downgrade rule" as a dummy Attachment returns version 1
+                { resolveAttachment(it.txhash) ?: missingAttachment },
+                { isAttachmentTrusted(it, null) }
+        )
+    }
+
+    // Especially crafted for TransactionVerificationRequest
+    @CordaInternal
+    internal fun toLtxDjvmInternalBridge(
+            resolveAttachment: (SecureHash) -> Attachment?,
+            resolveStateRef: (StateRef) -> TransactionState<*>?,
+            resolveParameters: (SecureHash?) -> NetworkParameters?
+    ): LedgerTransaction {
+        return toLedgerTransactionInternal(
+                { null },
+                resolveAttachment,
+                { stateRef -> resolveStateRef(stateRef)?.serialize() },
+                resolveParameters,
+                { resolveAttachment(it.txhash) ?: missingAttachment },
+                { true } // Any attachment loaded through the DJVM should be trusted
+        )
     }
 
     private fun toLedgerTransactionInternal(
             resolveIdentity: (PublicKey) -> Party?,
             resolveAttachment: (SecureHash) -> Attachment?,
             resolveStateRefAsSerialized: (StateRef) -> SerializedBytes<TransactionState<ContractState>>?,
-            resolveParameters: (SecureHash?) -> NetworkParameters?
+            resolveParameters: (SecureHash?) -> NetworkParameters?,
+            resolveContractAttachment: (StateRef) -> Attachment,
+            isAttachmentTrusted: (Attachment) -> Boolean
     ): LedgerTransaction {
         // Look up public keys to authenticated identities.
         val authenticatedCommands = commands.lazyMapped { cmd, _ ->
@@ -158,7 +191,7 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
 
         val resolvedAttachments = attachments.lazyMapped { att, _ -> resolveAttachment(att) ?: throw AttachmentResolutionException(att) }
 
-        val resolvedNetworkParameters = resolveParameters(networkParametersHash) ?: throw TransactionResolutionException(id)
+        val resolvedNetworkParameters = resolveParameters(networkParametersHash) ?: throw TransactionResolutionException.UnknownParametersException(id, networkParametersHash!!)
 
         val ltx = LedgerTransaction.create(
                 resolvedInputs,
@@ -173,7 +206,8 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
                 resolvedReferences,
                 componentGroups,
                 serializedResolvedInputs,
-                serializedResolvedReferences
+                serializedResolvedReferences,
+                isAttachmentTrusted
         )
 
         checkTransactionSize(ltx, resolvedNetworkParameters.maxTransactionSize, serializedResolvedInputs, serializedResolvedReferences)
@@ -307,17 +341,26 @@ class WireTransaction(componentGroups: List<ComponentGroup>, val privacySalt: Pr
         /**
          * This is the main logic that knows how to retrieve the binary representation of [StateRef]s.
          *
-         * For [ContractUpgradeWireTransaction] or [NotaryChangeWireTransaction] it knows how to recreate the output state in the correct classloader independent of the node's classpath.
+         * For [ContractUpgradeWireTransaction] or [NotaryChangeWireTransaction] it knows how to recreate the output state in the
+         * correct classloader independent of the node's classpath.
          */
         @CordaInternal
-        internal fun resolveStateRefBinaryComponent(stateRef: StateRef, services: ServicesForResolution): SerializedBytes<TransactionState<ContractState>>? {
+        fun resolveStateRefBinaryComponent(stateRef: StateRef, services: ServicesForResolution): SerializedBytes<TransactionState<ContractState>>? {
             return if (services is ServiceHub) {
                 val coreTransaction = services.validatedTransactions.getTransaction(stateRef.txhash)?.coreTransaction
                         ?: throw TransactionResolutionException(stateRef.txhash)
+                // Get the network parameters from the tx or whatever the default params are.
+                val paramsHash = coreTransaction.networkParametersHash ?: services.networkParametersService.defaultHash
+                val params = services.networkParametersService.lookup(paramsHash)
+                        ?: throw IllegalStateException("Should have been able to fetch parameters by this point: $paramsHash")
+                @Suppress("UNCHECKED_CAST")
                 when (coreTransaction) {
-                    is WireTransaction -> coreTransaction.componentGroups.firstOrNull { it.groupIndex == ComponentGroupEnum.OUTPUTS_GROUP.ordinal }?.components?.get(stateRef.index) as SerializedBytes<TransactionState<ContractState>>?
-                    is ContractUpgradeWireTransaction -> coreTransaction.resolveOutputComponent(services, stateRef)
-                    is NotaryChangeWireTransaction -> coreTransaction.resolveOutputComponent(services, stateRef)
+                    is WireTransaction -> coreTransaction.componentGroups
+                            .firstOrNull { it.groupIndex == ComponentGroupEnum.OUTPUTS_GROUP.ordinal }
+                            ?.components
+                            ?.get(stateRef.index) as SerializedBytes<TransactionState<ContractState>>?
+                    is ContractUpgradeWireTransaction -> coreTransaction.resolveOutputComponent(services, stateRef, params)
+                    is NotaryChangeWireTransaction -> coreTransaction.resolveOutputComponent(services, stateRef, params)
                     else -> throw UnsupportedOperationException("Attempting to resolve input ${stateRef.index} of a ${coreTransaction.javaClass} transaction. This is not supported.")
                 }
             } else {

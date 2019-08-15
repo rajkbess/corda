@@ -16,6 +16,7 @@ import net.corda.core.node.services.vault.LikenessOperator.*
 import net.corda.core.node.services.vault.NullOperator.IS_NULL
 import net.corda.core.node.services.vault.NullOperator.NOT_NULL
 import net.corda.core.node.services.vault.QueryCriteria.CommonQueryCriteria
+import net.corda.core.schemas.IndirectStatePersistable
 import net.corda.core.schemas.PersistentState
 import net.corda.core.schemas.PersistentStateRef
 import net.corda.core.schemas.StatePersistable
@@ -230,11 +231,12 @@ class HibernateAttachmentQueryCriteriaParser(override val criteriaBuilder: Crite
         }
 
         criteria.isSignedCondition?.let { isSigned ->
-            val joinDBAttachmentToSigners = root.joinList<NodeAttachmentService.DBAttachment, PublicKey>("signers")
-            if (isSigned == Builder.equal(true))
+            if (isSigned == Builder.equal(true)) {
+                val joinDBAttachmentToSigners = root.joinList<NodeAttachmentService.DBAttachment, PublicKey>("signers")
                 predicateSet.add(criteriaBuilder.and(joinDBAttachmentToSigners.isNotNull))
-            else
-                predicateSet.add(criteriaBuilder.and(joinDBAttachmentToSigners.isNull))
+            } else {
+                predicateSet.add(criteriaBuilder.equal(criteriaBuilder.size(root.get<List<PublicKey>?>("signers")),0))
+            }
         }
 
         criteria.versionCondition?.let {
@@ -460,7 +462,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
             }
 
             // Add the join and participants predicates.
-            val statePartyJoin = criteriaBuilder.equal(vaultStates.get<VaultSchemaV1.VaultStates>("stateRef"), entityRoot.get<VaultSchemaV1.PersistentParty>("stateRef"))
+            val statePartyJoin = criteriaBuilder.equal(vaultStates.get<VaultSchemaV1.VaultStates>("stateRef"), entityRoot.get<VaultSchemaV1.PersistentParty>("compositeKey").get<PersistentStateRef>("stateRef"))
             val participantsPredicate = criteriaBuilder.and(entityRoot.get<VaultSchemaV1.PersistentParty>("x500Name").`in`(participants))
             predicateSet.add(statePartyJoin)
             predicateSet.add(participantsPredicate)
@@ -512,7 +514,7 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
             }
 
             // Add the join and participants predicates.
-            val statePartyJoin = criteriaBuilder.equal(vaultStates.get<VaultSchemaV1.VaultStates>("stateRef"), entityRoot.get<VaultSchemaV1.PersistentParty>("stateRef"))
+            val statePartyJoin = criteriaBuilder.equal(vaultStates.get<VaultSchemaV1.VaultStates>("stateRef"), entityRoot.get<VaultSchemaV1.PersistentParty>("compositeKey").get<PersistentStateRef>("stateRef"))
             val participantsPredicate = criteriaBuilder.and(entityRoot.get<VaultSchemaV1.PersistentParty>("x500Name").`in`(participants))
             predicateSet.add(statePartyJoin)
             predicateSet.add(participantsPredicate)
@@ -536,7 +538,11 @@ class HibernateQueryCriteriaParser(val contractStateType: Class<out ContractStat
                         entityRoot
                     }
 
-            val joinPredicate = criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<PersistentStateRef>("stateRef"))
+            val joinPredicate = if(IndirectStatePersistable::class.java.isAssignableFrom(entityRoot.javaType)) {
+                        criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<IndirectStatePersistable<*>>("compositeKey").get<PersistentStateRef>("stateRef"))
+                    } else {
+                criteriaBuilder.equal(vaultStates.get<PersistentStateRef>("stateRef"), entityRoot.get<PersistentStateRef>("stateRef"))
+            }
             predicateSet.add(joinPredicate)
 
             // resolve general criteria expressions

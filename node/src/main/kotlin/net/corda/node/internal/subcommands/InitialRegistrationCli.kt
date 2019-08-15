@@ -11,11 +11,13 @@ import net.corda.node.internal.*
 import net.corda.node.internal.NodeStartupLogging.Companion.logger
 import net.corda.node.services.config.NodeConfiguration
 import net.corda.node.utilities.registration.HTTPNetworkRegistrationService
+import net.corda.node.utilities.registration.NodeRegistrationConfiguration
 import net.corda.node.utilities.registration.NodeRegistrationHelper
 import picocli.CommandLine.Mixin
 import picocli.CommandLine.Option
 import java.io.File
 import java.nio.file.Path
+import java.util.function.Consumer
 
 class InitialRegistrationCli(val startup: NodeStartup): CliWrapperBase("initial-registration", "Start initial node registration with Corda network to obtain certificate from the permissioning server.") {
     @Option(names = ["-t", "--network-root-truststore"], description = ["Network root trust store obtained from network operator."])
@@ -29,7 +31,7 @@ class InitialRegistrationCli(val startup: NodeStartup): CliWrapperBase("initial-
         return startup.initialiseAndRun(cmdLineOptions, InitialRegistration(cmdLineOptions.baseDirectory, networkRootTrustStorePath, networkRootTrustStorePassword, startup))
     }
 
-    override fun initLogging() = this.initLogging(cmdLineOptions.baseDirectory)
+    override fun initLogging(): Boolean = this.initLogging(cmdLineOptions.baseDirectory)
 
     @Mixin
     val cmdLineOptions = InitialRegistrationCmdLineOptions()
@@ -67,7 +69,7 @@ class InitialRegistration(val baseDirectory: Path, private val networkRootTrustS
                 "*                                                                *\n" +
                 "******************************************************************\n")
 
-        NodeRegistrationHelper(conf,
+        NodeRegistrationHelper(NodeRegistrationConfiguration(conf),
                 HTTPNetworkRegistrationService(
                         requireNotNull(conf.networkServices),
                         versionInfo),
@@ -83,7 +85,7 @@ class InitialRegistration(val baseDirectory: Path, private val networkRootTrustS
 
     private fun initialRegistration(config: NodeConfiguration) {
         // Null checks for [compatibilityZoneURL], [rootTruststorePath] and [rootTruststorePassword] has been done in [CmdLineOptions.loadConfig]
-        attempt { registerWithNetwork(config) }.doOnException(this::handleRegistrationError) as? Try.Success
+        attempt { registerWithNetwork(config) }.doOnFailure(Consumer(this::handleRegistrationError)) as Try.Success
         // At this point the node registration was successful. We can delete the marker file.
         deleteNodeRegistrationMarker(baseDirectory)
     }

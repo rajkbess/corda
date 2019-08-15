@@ -63,6 +63,9 @@ fun Path.copyTo(target: Path, vararg options: CopyOption): Path = Files.copy(thi
 /** @see Files.move */
 fun Path.moveTo(target: Path, vararg options: CopyOption): Path = Files.move(this, target, *options)
 
+/** @see Files.move */
+fun Path.renameTo(fileName: String, vararg options: CopyOption): Path = moveTo(parent / fileName, *options)
+
 /** See overload of [Files.copy] which takes in an [InputStream]. */
 fun Path.copyTo(out: OutputStream): Long = Files.copy(this, out)
 
@@ -74,6 +77,9 @@ inline val Path.isReadable: Boolean get() = Files.isReadable(this)
 
 /** @see Files.size */
 inline val Path.size: Long get() = Files.size(this)
+
+/** @see Files.readAttributes */
+fun Path.attributes(vararg options: LinkOption): BasicFileAttributes = Files.readAttributes(this, BasicFileAttributes::class.java, *options)
 
 /** @see Files.getLastModifiedTime */
 fun Path.lastModifiedTime(vararg options: LinkOption): FileTime = Files.getLastModifiedTime(this, *options)
@@ -188,3 +194,12 @@ inline fun <reified T : Any> Path.readObject(): T = readAll().deserialize()
 
 /** Calculate the hash of the contents of this file. */
 inline val Path.hash: SecureHash get() = read { it.hash() }
+
+/* Check if the Path is symbolic link */
+fun Path.safeSymbolicRead(): Path {
+    if (Files.isSymbolicLink(this)) {
+        return (Files.readSymbolicLink(this))
+    } else {
+        return (this)
+    }
+}

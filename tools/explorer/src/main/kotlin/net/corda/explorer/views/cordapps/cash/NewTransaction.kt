@@ -39,7 +39,6 @@ import net.corda.finance.flows.CashIssueAndPaymentFlow
 import net.corda.finance.flows.CashIssueAndPaymentFlow.IssueAndPaymentRequest
 import net.corda.finance.flows.CashPaymentFlow
 import net.corda.finance.flows.CashPaymentFlow.PaymentRequest
-import net.corda.testing.core.singleIdentityAndCert
 import org.controlsfx.dialog.ExceptionDialog
 import tornadofx.*
 import java.math.BigDecimal
@@ -96,9 +95,9 @@ class NewTransaction : Fragment() {
                 show()
             }
             val handle: FlowHandle<AbstractCashFlow.Result> = when (request) {
-                is IssueAndPaymentRequest -> rpcProxy.value!!.cordaRPCOps.startFlow(::CashIssueAndPaymentFlow, request)
-                is PaymentRequest -> rpcProxy.value!!.cordaRPCOps.startFlow(::CashPaymentFlow, request)
-                is ExitRequest -> rpcProxy.value!!.cordaRPCOps.startFlow(::CashExitFlow, request)
+                is IssueAndPaymentRequest -> rpcProxy.value!!.startFlow(::CashIssueAndPaymentFlow, request)
+                is PaymentRequest -> rpcProxy.value!!.startFlow(::CashPaymentFlow, request)
+                is ExitRequest -> rpcProxy.value!!.startFlow(::CashExitFlow, request)
                 else -> throw IllegalArgumentException("Unexpected request type: $request")
             }
             runAsync {
@@ -152,14 +151,19 @@ class NewTransaction : Fragment() {
             val anonymous = true
             val defaultRef = OpaqueBytes.of(1)
             val issueRef = if (issueRef.value != null) OpaqueBytes.of(issueRef.value) else defaultRef
-            when (it) {
-                executeButton -> when (transactionTypeCB.value) {
-                    CashTransaction.Issue -> IssueAndPaymentRequest(Amount.fromDecimal(amount.value, currencyChoiceBox.value), issueRef, partyBChoiceBox.value.party, selectNotary(), anonymous)
-                    CashTransaction.Pay -> PaymentRequest(Amount.fromDecimal(amount.value, currencyChoiceBox.value), partyBChoiceBox.value.party, anonymous = anonymous, notary = selectNotary())
-                    CashTransaction.Exit -> ExitRequest(Amount.fromDecimal(amount.value, currencyChoiceBox.value), issueRef)
+            try {
+                when (it) {
+                    executeButton -> when (transactionTypeCB.value) {
+                        CashTransaction.Issue -> IssueAndPaymentRequest(Amount.fromDecimal(amount.value, currencyChoiceBox.value), issueRef, partyBChoiceBox.value.party, selectNotary(), anonymous)
+                        CashTransaction.Pay -> PaymentRequest(Amount.fromDecimal(amount.value, currencyChoiceBox.value), partyBChoiceBox.value.party, anonymous = anonymous, notary = selectNotary())
+                        CashTransaction.Exit -> ExitRequest(Amount.fromDecimal(amount.value, currencyChoiceBox.value), issueRef)
+                        else -> null
+                    }
                     else -> null
                 }
-                else -> null
+            } catch (e: IllegalArgumentException) {
+                ExceptionDialog(e).showAndWait()
+                null
             }
         }
     }
@@ -183,7 +187,7 @@ class NewTransaction : Fragment() {
         partyBLabel.textProperty().bind(transactionTypeCB.valueProperty().map { it?.partyNameB?.let { "$it : " } })
         partyBChoiceBox.apply {
             visibleProperty().bind(transactionTypeCB.valueProperty().map { it?.partyNameB }.isNotNull())
-            items = FXCollections.observableList(parties.map { it.singleIdentityAndCert() }).sorted()
+            items = FXCollections.observableList(parties.map { it.legalIdentitiesAndCerts.single() }).sorted()
             converter = stringConverter { it?.let { PartyNameFormatter.short.format(it.name) } ?: "" }
         }
         // Issuer

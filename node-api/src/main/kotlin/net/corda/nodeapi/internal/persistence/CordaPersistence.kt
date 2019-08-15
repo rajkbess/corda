@@ -1,17 +1,24 @@
 package net.corda.nodeapi.internal.persistence
 
 import co.paralleluniverse.strands.Strand
+import com.zaxxer.hikari.HikariDataSource
+import com.zaxxer.hikari.pool.HikariPool
+import com.zaxxer.hikari.util.ConcurrentBag
 import net.corda.core.internal.NamedCacheFactory
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.utilities.contextLogger
+import org.hibernate.tool.schema.spi.SchemaManagementException
 import rx.Observable
 import rx.Subscriber
 import rx.subjects.UnicastSubject
 import java.io.Closeable
+import java.lang.reflect.Field
 import java.sql.Connection
 import java.sql.SQLException
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import javax.persistence.AttributeConverter
 import javax.sql.DataSource
 
@@ -20,15 +27,23 @@ import javax.sql.DataSource
  */
 const val NODE_DATABASE_PREFIX = "node_"
 
+enum class SchemaInitializationType{
+    NONE,
+    VALIDATE,
+    UPDATE
+}
+
 // This class forms part of the node config and so any changes to it must be handled with care
 data class DatabaseConfig(
         val initialiseSchema: Boolean = Defaults.initialiseSchema,
+        val initialiseAppSchema: SchemaInitializationType = Defaults.initialiseAppSchema,
         val transactionIsolationLevel: TransactionIsolationLevel = Defaults.transactionIsolationLevel,
         val exportHibernateJMXStatistics: Boolean = Defaults.exportHibernateJMXStatistics,
         val mappedSchemaCacheSize: Long = Defaults.mappedSchemaCacheSize
 ) {
     object Defaults {
         val initialiseSchema = true
+        val initialiseAppSchema = SchemaInitializationType.UPDATE
         val transactionIsolationLevel = TransactionIsolationLevel.REPEATABLE_READ
         val exportHibernateJMXStatistics = false
         val mappedSchemaCacheSize = 100L
@@ -50,10 +65,30 @@ enum class TransactionIsolationLevel {
     val jdbcValue: Int = java.sql.Connection::class.java.getField(jdbcString).get(null) as Int
 }
 
+internal val _prohibitDatabaseAccess = ThreadLocal.withInitial { false }
+
 private val _contextDatabase = InheritableThreadLocal<CordaPersistence>()
 var contextDatabase: CordaPersistence
-    get() = _contextDatabase.get() ?: error("Was expecting to find CordaPersistence set on current thread: ${Strand.currentStrand()}")
+    get() {
+        require(_prohibitDatabaseAccess.get() != true) { "Database access is disabled in this context." }
+        return _contextDatabase.get() ?: error("Was expecting to find CordaPersistence set on current thread: ${Strand.currentStrand()}")
+    }
     set(database) = _contextDatabase.set(database)
+
+/**
+ * The logic in the [block] will be prevented from opening a database transaction.
+ * Also will not be able to access database resources ( Like the context transaction or the [contextDatabase] ).
+ */
+fun <T> withoutDatabaseAccess(block: () -> T): T {
+    val oldValue = _prohibitDatabaseAccess.get()
+    _prohibitDatabaseAccess.set(true)
+    try {
+        return block()
+    } finally {
+        _prohibitDatabaseAccess.set(oldValue)
+    }
+}
+
 val contextDatabaseOrNull: CordaPersistence? get() = _contextDatabase.get()
 
 class CordaPersistence(
@@ -62,7 +97,8 @@ class CordaPersistence(
         val jdbcUrl: String,
         cacheFactory: NamedCacheFactory,
         attributeConverters: Collection<AttributeConverter<*, *>> = emptySet(),
-        customClassLoader: ClassLoader? = null
+        customClassLoader: ClassLoader? = null,
+        val closeConnection: Boolean = true
 ) : Closeable {
     companion object {
         private val log = contextLogger()
@@ -71,7 +107,14 @@ class CordaPersistence(
     private val defaultIsolationLevel = databaseConfig.transactionIsolationLevel
     val hibernateConfig: HibernateConfiguration by lazy {
         transaction {
-            HibernateConfiguration(schemas, databaseConfig, attributeConverters, jdbcUrl, cacheFactory, customClassLoader)
+            try {
+                HibernateConfiguration(schemas, databaseConfig, attributeConverters, jdbcUrl, cacheFactory, customClassLoader)
+            } catch (e: Exception) {
+                when (e) {
+                    is SchemaManagementException -> throw HibernateSchemaChangeException("Incompatible schema change detected. Please run the node with database.initialiseSchema=true. Reason: ${e.message}", e)
+                    else -> throw HibernateConfigException("Could not create Hibernate configuration: ${e.message}", e)
+                }
+            }
         }
     }
 
@@ -102,9 +145,37 @@ class CordaPersistence(
         return contextTransactionOrNull ?: newTransaction(isolation)
     }
 
+    private val liveTransactions = ConcurrentHashMap<UUID, DatabaseTransaction>()
+
     fun newTransaction(isolation: TransactionIsolationLevel = defaultIsolationLevel): DatabaseTransaction {
+        if (_prohibitDatabaseAccess.get()) {
+            throw IllegalAccessException("Database access is not allowed in the current context.")
+        }
+        val outerTransaction = contextTransactionOrNull
         return DatabaseTransaction(isolation.jdbcValue, contextTransactionOrNull, this).also {
             contextTransactionOrNull = it
+            // Outer transaction only exists in a controlled scenario we can ignore.
+            if (outerTransaction == null) {
+                liveTransactions.put(it.id, it)
+                it.onClose { liveTransactions.remove(it.id) }
+            }
+        }
+    }
+
+    fun onAllOpenTransactionsClosed(callback: () -> Unit) {
+        // Does not use kotlin toList() as that is not safe to use on concurrent collections.
+        val allOpen = ArrayList(liveTransactions.values)
+        if (allOpen.isEmpty()) {
+            callback()
+        } else {
+            val counter = AtomicInteger(allOpen.size)
+            allOpen.forEach {
+                it.onClose {
+                    if (counter.decrementAndGet() == 0) {
+                        callback()
+                    }
+                }
+            }
         }
     }
 
@@ -156,6 +227,15 @@ class CordaPersistence(
         }
     }
 
+    /**
+     * Executes given statement in the scope of transaction with the transaction level specified at the creation time.
+     * @param statement to be executed in the scope of this transaction.
+     * @param recoverableFailureTolerance number of transaction commit retries for SQL while SQL exception is encountered.
+     */
+    fun <T> transaction(recoverableFailureTolerance: Int, statement: DatabaseTransaction.() -> T): T {
+        return transaction(defaultIsolationLevel, recoverableFailureTolerance, false, statement)
+    }
+
     private fun <T> inTopLevelTransaction(isolationLevel: TransactionIsolationLevel, recoverableFailureTolerance: Int,
                                           recoverAnyNestedSQLException: Boolean, statement: DatabaseTransaction.() -> T): T {
         var recoverableFailureCount = 0
@@ -187,6 +267,24 @@ class CordaPersistence(
     override fun close() {
         // DataSource doesn't implement AutoCloseable so we just have to hope that the implementation does so that we can close it
         (_dataSource as? AutoCloseable)?.close()
+    }
+
+    val hikariPoolThreadLocal: ThreadLocal<List<Object>>? by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        val hikariDataSource = dataSource as? HikariDataSource
+        if (hikariDataSource == null) {
+            null
+        } else {
+            val poolField: Field = HikariDataSource::class.java.getDeclaredField("pool")
+            poolField.isAccessible = true
+            val pool: HikariPool = poolField.get(hikariDataSource) as HikariPool
+            val connectionBagField: Field = HikariPool::class.java.getDeclaredField("connectionBag")
+            connectionBagField.isAccessible = true
+            val connectionBag: ConcurrentBag<ConcurrentBag.IConcurrentBagEntry> = connectionBagField.get(pool) as ConcurrentBag<ConcurrentBag.IConcurrentBagEntry>
+            val threadListField: Field = ConcurrentBag::class.java.getDeclaredField("threadList")
+            threadListField.isAccessible = true
+            val threadList: ThreadLocal<List<Object>> = threadListField.get(connectionBag) as ThreadLocal<List<Object>>
+            threadList
+        }
     }
 }
 
@@ -282,3 +380,7 @@ private fun Throwable.hasSQLExceptionCause(): Boolean =
         }
 
 class CouldNotCreateDataSourceException(override val message: String?, override val cause: Throwable? = null) : Exception()
+
+class HibernateSchemaChangeException(override val message: String?, override val cause: Throwable? = null): Exception()
+
+class HibernateConfigException(override val message: String?, override val cause: Throwable? = null): Exception()

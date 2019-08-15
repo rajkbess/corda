@@ -1,11 +1,12 @@
 package net.corda.node.internal
 
-import com.codahale.metrics.JmxReporter
 import com.codahale.metrics.MetricFilter
 import com.codahale.metrics.MetricRegistry
+import com.codahale.metrics.jmx.JmxReporter
 import com.github.benmanes.caffeine.cache.Caffeine
 import com.palominolabs.metrics.newrelic.AllEnabledMetricAttributeFilter
 import com.palominolabs.metrics.newrelic.NewRelicReporter
+import io.netty.util.NettyRuntime
 import net.corda.client.rpc.internal.serialization.amqp.AMQPClientSerializationScheme
 import net.corda.cliutils.ShellConstants
 import net.corda.core.concurrent.CordaFuture
@@ -17,6 +18,7 @@ import net.corda.core.internal.concurrent.openFuture
 import net.corda.core.internal.concurrent.thenMatch
 import net.corda.core.internal.div
 import net.corda.core.internal.errors.AddressBindingException
+import net.corda.core.internal.getJavaUpdateVersion
 import net.corda.core.internal.notary.NotaryService
 import net.corda.core.messaging.CordaRPCOps
 import net.corda.core.messaging.RPCOps
@@ -43,10 +45,15 @@ import net.corda.node.services.api.FlowStarter
 import net.corda.node.services.api.ServiceHubInternal
 import net.corda.node.services.api.StartedNodeServices
 import net.corda.node.services.config.*
-import net.corda.node.services.messaging.*
+import net.corda.node.services.messaging.ArtemisMessagingServer
+import net.corda.node.services.messaging.MessagingService
+import net.corda.node.services.messaging.P2PMessagingClient
 import net.corda.node.services.rpc.ArtemisRpcBroker
+import net.corda.node.services.rpc.InternalRPCMessagingClient
+import net.corda.node.services.rpc.RPCServerConfiguration
 import net.corda.node.services.statemachine.StateMachineManager
 import net.corda.node.utilities.*
+import net.corda.nodeapi.internal.ArtemisMessagingClient
 import net.corda.nodeapi.internal.ArtemisMessagingComponent.Companion.INTERNAL_SHELL_USER
 import net.corda.nodeapi.internal.ShutdownHook
 import net.corda.nodeapi.internal.addShutdownHook
@@ -57,12 +64,14 @@ import net.corda.nodeapi.internal.persistence.CouldNotCreateDataSourceException
 import net.corda.serialization.internal.*
 import net.corda.serialization.internal.amqp.SerializationFactoryCacheKey
 import net.corda.serialization.internal.amqp.SerializerFactory
-import org.apache.commons.lang.SystemUtils
-import org.h2.jdbc.JdbcSQLException
+import org.apache.commons.lang3.SystemUtils
+import org.h2.jdbc.JdbcSQLNonTransientConnectionException
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import rx.Scheduler
 import rx.schedulers.Schedulers
+import java.lang.Long.max
+import java.lang.Long.min
 import java.net.BindException
 import java.net.InetAddress
 import java.nio.file.Path
@@ -151,10 +160,9 @@ open class Node(configuration: NodeConfiguration,
 
         private fun hasMinimumJavaVersion(): Boolean {
             // when the ext.java8_minUpdateVersion gradle constant changes, so must this check
-            val major = SystemUtils.JAVA_VERSION_FLOAT
             return try {
-                val update = SystemUtils.JAVA_VERSION.substringAfter("_").toLong()
-                major == 1.8F && update >= 171
+                val update = getJavaUpdateVersion(SystemUtils.JAVA_VERSION) // To filter out cases like 1.8.0_202-ea
+                SystemUtils.IS_JAVA_1_8 && update >= 171
             } catch (e: NumberFormatException) { // custom JDKs may not have the update version (e.g. 1.8.0-adoptopenjdk)
                 false
             }
@@ -228,6 +236,13 @@ open class Node(configuration: NodeConfiguration,
 
         network as P2PMessagingClient
 
+        if (System.getProperty("io.netty.allocator.numHeapArenas").isNullOrBlank()) {
+            // Netty arenas are approx 16MB each when max'd out.  Set arenas based on memory, not core count, unless memory is abundant.
+            val memBasedArenas = max(Runtime.getRuntime().maxMemory() / 256.MB, 1L)
+            // We set the min of the above and the default.
+            System.setProperty("io.netty.allocator.numHeapArenas", min(memBasedArenas, NettyRuntime.availableProcessors() * 2L).toString())
+        }
+
         // Construct security manager reading users data either from the 'security' config section
         // if present or from rpcUsers list if the former is missing from config.
         val securityManagerConfig = configuration.security?.authService
@@ -251,7 +266,7 @@ open class Node(configuration: NodeConfiguration,
             startLocalRpcBroker(securityManager)
         }
 
-        val bridgeControlListener = BridgeControlListener(configuration.p2pSslOptions, network.serverAddress, networkParameters.maxMessageSize)
+        val bridgeControlListener = makeBridgeControlListener(network.serverAddress, networkParameters)
 
         printBasicNodeInfo("Advertised P2P messaging addresses", nodeInfo.addresses.joinToString())
         val rpcServerConfiguration = RPCServerConfiguration.DEFAULT
@@ -289,6 +304,18 @@ open class Node(configuration: NodeConfiguration,
         )
     }
 
+    private fun makeBridgeControlListener(serverAddress: NetworkHostAndPort, networkParameters: NetworkParameters) : BridgeControlListener {
+        val artemisMessagingClientFactory = {
+            ArtemisMessagingClient(
+                    configuration.p2pSslOptions,
+                    serverAddress,
+                    networkParameters.maxMessageSize,
+                    failoverCallback =  { errorAndTerminate("ArtemisMessagingClient failed. Shutting down.", null) }
+            )
+        }
+        return BridgeControlListener(configuration.p2pSslOptions, networkParameters.maxMessageSize, configuration.crlCheckSoftFail, artemisMessagingClientFactory)
+    }
+
     private fun startLocalRpcBroker(securityManager: RPCSecurityManager): BrokerAddresses? {
         return with(configuration) {
             rpcOptions.address.let {
@@ -309,6 +336,9 @@ open class Node(configuration: NodeConfiguration,
 
     private fun getAdvertisedAddress(): NetworkHostAndPort {
         return with(configuration) {
+            require(p2pAddress.host != "0.0.0.0") {
+                "Invalid p2pAddress: $p2pAddress contains 0.0.0.0 which is not suitable as an advertised node address"
+            }
             val host = if (detectPublicIp) {
                 tryDetectIfNotPublicHost(p2pAddress.host) ?: p2pAddress.host
             } else {
@@ -321,10 +351,11 @@ open class Node(configuration: NodeConfiguration,
     /**
      * Checks whether the specified [host] is a public IP address or hostname. If not, tries to discover the current
      * machine's public IP address to be used instead by looking through the network interfaces.
-     * TODO this code used to rely on the networkmap node, we might want to look at a different solution.
      */
     private fun tryDetectIfNotPublicHost(host: String): String? {
-        return if (!AddressUtils.isPublic(host)) {
+        return if (host.toLowerCase() == "localhost") {
+            log.warn("p2pAddress specified as localhost. Trying to autodetect a suitable public address to advertise in network map." +
+                    "To disable autodetect set detectPublicIp = false in the node.conf, or consider using messagingServerAddress and messagingServerExternal")
             val foundPublicIP = AddressUtils.tryDetectPublicIP()
             if (foundPublicIP == null) {
                 try {
@@ -383,7 +414,7 @@ open class Node(configuration: NodeConfiguration,
                 runOnStop += server::stop
                 val url = try {
                     server.start().url
-                } catch (e: JdbcSQLException) {
+                } catch (e: JdbcSQLNonTransientConnectionException) {
                     if (e.cause is BindException) {
                         throw AddressBindingException(effectiveH2Settings.address)
                     } else {
@@ -407,6 +438,7 @@ open class Node(configuration: NodeConfiguration,
     }
 
     override fun start(): NodeInfo {
+        registerDefaultExceptionHandler()
         initialiseSerialization()
         val nodeInfo: NodeInfo = super.start()
         nodeReadyFuture.thenMatch({
@@ -423,6 +455,14 @@ open class Node(configuration: NodeConfiguration,
             stop()
         }
         return nodeInfo
+    }
+
+    /**
+     * Register a default exception handler for all threads that terminates the process if the database connection goes away and
+     * cannot be recovered.
+     */
+    private fun registerDefaultExceptionHandler() {
+        Thread.setDefaultUncaughtExceptionHandler(DbExceptionHandler(Thread.getDefaultUncaughtExceptionHandler()))
     }
 
     /**

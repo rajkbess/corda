@@ -31,11 +31,20 @@ configuration for PostgreSQL:
     }
 
 Note that:
-* Database schema name can be set in JDBC URL string e.g. currentSchema=myschema
+
+* Database schema name can be set in JDBC URL string e.g. *currentSchema=my_schema*
 * Database schema name must either match the ``dataSource.user`` value to end up
   on the standard schema search path according to the
   `PostgreSQL documentation <https://www.postgresql.org/docs/9.3/static/ddl-schemas.html#DDL-SCHEMAS-PATH>`_, or
   the schema search path must be set explicitly for the user.
+* If your PostgresSQL database is hosting multiple schema instances (using the JDBC URL currentSchema=my_schema)
+  for different Corda nodes, you will need to create a *hibernate_sequence* sequence object manually for each subsequent schema added after the first instance.
+  Corda doesn't provision Hibernate with a schema namespace setting and a sequence object may be not created.
+  Run the DDL statement and replace *my_schema* with your schema namespace:
+
+  .. sourcecode:: groovy
+
+    CREATE SEQUENCE my_schema.hibernate_sequence INCREMENT BY 1 MINVALUE 1 MAXVALUE 9223372036854775807 START 8 CACHE 1 NO CYCLE;
 
 SQLServer
 ---------
@@ -76,6 +85,8 @@ By default, the node database has the following tables:
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_ATTACHMENTS_CONTRACTS  | ATT_ID, CONTRACT_CLASS_NAME                                                                                                                                                                              |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| NODE_ATTACHMENTS_SIGNERS    | ATT_ID, SIGNER                                                                                                                                                                                           |
++-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_CHECKPOINTS            | CHECKPOINT_ID, CHECKPOINT_VALUE                                                                                                                                                                          |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_CONTRACT_UPGRADES      | STATE_REF, CONTRACT_CLASS_NAME                                                                                                                                                                           |
@@ -92,13 +103,15 @@ By default, the node database has the following tables:
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_MESSAGE_IDS            | MESSAGE_ID, INSERTION_TIME, SENDER, SEQUENCE_NUMBER                                                                                                                                                      |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| NODE_NAMES_IDENTITIES       | NAME, PK_HASH                                                                                                                                                                                            |
+| NODE_NAMED_IDENTITIES       | NAME, PK_HASH                                                                                                                                                                                            |
++-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| NODE_NETWORK_PARAMETERS     | HASH, EPOCH, PARAMETERS_BYTES, SIGNATURE_BYTES, CERT, PARENT_CERT_PATH                                                                                                                                   |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_OUR_KEY_PAIRS          | PUBLIC_KEY_HASH, PRIVATE_KEY, PUBLIC_KEY                                                                                                                                                                 |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_PROPERTIES             | PROPERTY_KEY, PROPERTY_VALUE                                                                                                                                                                             |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
-| NODE_SCHEDULED_STATES       | OUTPUT_INDEXTRANSACTION_IDSCHEDULED_AT                                                                                                                                                                   |
+| NODE_SCHEDULED_STATES       | OUTPUT_INDEX, TRANSACTION_ID, SCHEDULED_AT                                                                                                                                                               |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | NODE_TRANSACTIONS           | TX_ID, TRANSACTION_VALUE, STATE_MACHINE_RUN_ID                                                                                                                                                           |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
@@ -120,3 +133,22 @@ By default, the node database has the following tables:
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
 | V_PKEY_HASH_EX_ID_MAP       | ID, PUBLIC_KEY_HASH, TRANSACTION_ID, OUTPUT_INDEX, EXTERNAL_ID                                                                                                                                           |
 +-----------------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+For more details see: :doc:`node-database-tables`.
+
+Database connection pool
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+Corda uses `Hikari Pool <https://github.com/brettwooldridge/HikariCP>`_ for creating the connection pool.
+To configure the connection pool any custom properties can be set in the `dataSourceProperties` section.
+
+For example:
+
+.. sourcecode:: groovy
+
+    dataSourceProperties = {
+        dataSourceClassName = "org.postgresql.ds.PGSimpleDataSource"
+        ...
+        maximumPoolSize = 10
+        connectionTimeout = 50000
+    }

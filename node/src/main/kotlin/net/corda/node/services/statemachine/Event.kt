@@ -1,5 +1,6 @@
 package net.corda.node.services.statemachine
 
+import net.corda.core.flows.Destination
 import net.corda.core.flows.FlowLogic
 import net.corda.core.identity.Party
 import net.corda.core.internal.FlowIORequest
@@ -69,9 +70,8 @@ sealed class Event {
      *
      * Initiate a flow. This causes a new session object to be created and returned to the flow. Note that no actual
      * communication takes place at this time, only on the first send/receive operation on the session.
-     * @param party the [Party] to create a session with.
      */
-    data class InitiateFlow(val party: Party) : Event()
+    data class InitiateFlow(val destination: Destination) : Event()
 
     /**
      * Signal the entering into a subflow.
@@ -80,7 +80,7 @@ sealed class Event {
      *
      * @param subFlowClass the [Class] of the subflow, to be used to determine whether it's Initiating or inlined.
      */
-    data class EnterSubFlow(val subFlowClass: Class<FlowLogic<*>>, val subFlowVersion: SubFlowVersion ) : Event()
+    data class EnterSubFlow(val subFlowClass: Class<FlowLogic<*>>, val subFlowVersion: SubFlowVersion, val isEnabledTimedFlow: Boolean) : Event()
 
     /**
      * Signal the leaving of a subflow.

@@ -4,24 +4,26 @@ import com.google.common.jimfs.Jimfs
 import net.corda.core.concurrent.CordaFuture
 import net.corda.core.crypto.random63BitValue
 import net.corda.core.flows.FlowLogic
-import net.corda.core.flows.FlowSession
+import net.corda.core.flows.InitiatedBy
 import net.corda.core.identity.CordaX500Name
 import net.corda.core.identity.Party
+import net.corda.core.internal.uncheckedCast
 import net.corda.core.node.NetworkParameters
 import net.corda.core.node.NodeInfo
 import net.corda.core.node.ServiceHub
-import net.corda.core.toFuture
+import net.corda.core.node.services.CordaService
+import net.corda.core.serialization.SerializeAsToken
 import net.corda.core.utilities.getOrThrow
-import net.corda.node.internal.InitiatedFlowFactory
 import net.corda.node.services.config.NodeConfiguration
 import net.corda.testing.common.internal.testNetworkParameters
 import net.corda.testing.core.DUMMY_NOTARY_NAME
-import net.corda.testing.node.internal.*
+import net.corda.testing.node.internal.InternalMockNetwork
+import net.corda.testing.node.internal.InternalMockNodeParameters
+import net.corda.testing.node.internal.TestStartedNode
+import net.corda.testing.node.internal.newContext
 import rx.Observable
 import java.math.BigInteger
 import java.nio.file.Path
-import java.util.concurrent.Future
-
 
 /**
  * Immutable builder for configuring a [StartedMockNode] or an [UnstartedMockNode] via [MockNetwork.createNode] and
@@ -61,8 +63,7 @@ data class MockNodeParameters(
 }
 
 /**
- * Immutable builder for configuring a [MockNetwork]. Kotlin users can also use named parameters to the constructor
- * of [MockNetwork], which is more convenient.
+ * Immutable builder for configuring a [MockNetwork].
  *
  * @property networkSendManuallyPumped If false then messages will not be routed from sender to receiver until you use
  * the [MockNetwork.runNetwork] method. This is useful for writing single-threaded unit test code that can examine the
@@ -77,6 +78,7 @@ data class MockNodeParameters(
  * @property notarySpecs The notaries to use in the mock network. By default you get one mock notary and that is usually sufficient.
  * @property networkParameters The network parameters to be used by all the nodes. [NetworkParameters.notaries] must be
  * empty as notaries are defined by [notarySpecs].
+ * @property cordappsForAllNodes [TestCordapp]s added to all nodes.
  */
 @Suppress("unused")
 data class MockNetworkParameters(
@@ -84,13 +86,36 @@ data class MockNetworkParameters(
         val threadPerNode: Boolean = false,
         val servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy = InMemoryMessagingNetwork.ServicePeerAllocationStrategy.Random(),
         val notarySpecs: List<MockNetworkNotarySpec> = listOf(MockNetworkNotarySpec(DUMMY_NOTARY_NAME)),
-        val networkParameters: NetworkParameters = testNetworkParameters()
+        val networkParameters: NetworkParameters = testNetworkParameters(),
+        val cordappsForAllNodes: Collection<TestCordapp> = emptyList()
 ) {
+    constructor(networkSendManuallyPumped: Boolean,
+                threadPerNode: Boolean,
+                servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy,
+                notarySpecs: List<MockNetworkNotarySpec>,
+                networkParameters: NetworkParameters
+    ) : this(networkSendManuallyPumped, threadPerNode, servicePeerAllocationStrategy, notarySpecs, networkParameters, emptyList())
+
+    constructor(cordappsForAllNodes: Collection<TestCordapp>) : this(threadPerNode = false, cordappsForAllNodes = cordappsForAllNodes)
+
     fun withNetworkParameters(networkParameters: NetworkParameters): MockNetworkParameters = copy(networkParameters = networkParameters)
     fun withNetworkSendManuallyPumped(networkSendManuallyPumped: Boolean): MockNetworkParameters = copy(networkSendManuallyPumped = networkSendManuallyPumped)
     fun withThreadPerNode(threadPerNode: Boolean): MockNetworkParameters = copy(threadPerNode = threadPerNode)
-    fun withServicePeerAllocationStrategy(servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy): MockNetworkParameters = copy(servicePeerAllocationStrategy = servicePeerAllocationStrategy)
+    fun withServicePeerAllocationStrategy(servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy): MockNetworkParameters {
+        return copy(servicePeerAllocationStrategy = servicePeerAllocationStrategy)
+    }
+
     fun withNotarySpecs(notarySpecs: List<MockNetworkNotarySpec>): MockNetworkParameters = copy(notarySpecs = notarySpecs)
+    fun withCordappsForAllNodes(cordappsForAllNodes: Collection<TestCordapp>): MockNetworkParameters = copy(cordappsForAllNodes = cordappsForAllNodes)
+
+    fun copy(networkSendManuallyPumped: Boolean,
+             threadPerNode: Boolean,
+             servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy,
+             notarySpecs: List<MockNetworkNotarySpec>,
+             networkParameters: NetworkParameters
+    ): MockNetworkParameters {
+        return MockNetworkParameters(networkSendManuallyPumped, threadPerNode, servicePeerAllocationStrategy, notarySpecs, networkParameters, emptyList())
+    }
 }
 
 /**
@@ -99,9 +124,14 @@ data class MockNetworkParameters(
  *
  * @property name The name of the notary node.
  * @property validating Boolean for whether the notary is validating or non-validating.
+ * @property className String the optional name of a notary service class to load. If null, a builtin notary is loaded.
  */
-data class MockNetworkNotarySpec(val name: CordaX500Name, val validating: Boolean = true) {
-    constructor(name: CordaX500Name) : this(name, validating = true)
+data class MockNetworkNotarySpec @JvmOverloads constructor(val name: CordaX500Name, val validating: Boolean = true) {
+    var className: String? = null
+
+    constructor(name: CordaX500Name, validating: Boolean = true, className: String? = null) : this(name, validating) {
+        this.className = className
+    }
 }
 
 /** A class that represents an unstarted mock node for testing. */
@@ -114,6 +144,15 @@ class UnstartedMockNode private constructor(private val node: InternalMockNetwor
 
     /** An identifier for the node. By default this is allocated sequentially in a [MockNetwork] **/
     val id get() : Int = node.id
+
+    /**
+     * Install a custom test-only [CordaService].
+     *
+     * NOTE: There is no need to call this method if the service class is defined in the CorDapp and the [TestCordapp] API is used.
+     *
+     * @return the instance of the service object.
+     */
+    fun <T : SerializeAsToken> installCordaService(serviceClass: Class<T>): T = node.installCordaService(serviceClass)
 
     /**
      * Start the node
@@ -152,12 +191,32 @@ class StartedMockNode private constructor(private val node: TestStartedNode) {
 
     /**
      * Starts an already constructed flow. Note that you must be on the server thread to call this method.
-     * @param context indicates who started the flow, see: [InvocationContext].
      */
     fun <T> startFlow(logic: FlowLogic<T>): CordaFuture<T> = node.services.startFlow(logic, node.services.newContext()).getOrThrow().resultFuture
 
-    /** Register a flow that is initiated by another flow .**/
+    /**
+     * Manually register an initiating-responder flow pair based on the [FlowLogic] annotations.
+     *
+     * NOTE: There is no need to call this method if the flow pair is defined in the CorDapp and the [TestCordapp] API is used.
+     *
+     * @param initiatedFlowClass [FlowLogic] class which is annotated with [InitiatedBy].
+     * @return An [Observable] which emits responder flows each time one is executed.
+     */
     fun <F : FlowLogic<*>> registerInitiatedFlow(initiatedFlowClass: Class<F>): Observable<F> = node.registerInitiatedFlow(initiatedFlowClass)
+
+    /**
+     * Register a *custom* relationship between initiating and receiving flow on a node-by-node basis. This is used when
+     * we want to manually specify that a particular initiating flow class will have a particular responder.
+     *
+     * Note that this change affects _only_ the node on which this method is called, and not the entire network.
+     *
+     * @param initiatingFlowClass The [FlowLogic]-inheriting class to register a new responder for.
+     * @param initiatedFlowClass The class of the responder flow.
+     * @return An [Observable] which emits responder flows each time one is executed.
+     */
+    fun <F : FlowLogic<*>> registerInitiatedFlow(initiatingFlowClass: Class<out FlowLogic<*>>, initiatedFlowClass: Class<F>): Observable<F> {
+        return node.registerInitiatedFlow(initiatingFlowClass, initiatedFlowClass)
+    }
 
     /** Stop the node. **/
     fun stop() = node.internals.stop()
@@ -186,64 +245,7 @@ class StartedMockNode private constructor(private val node: TestStartedNode) {
             statement()
         }
     }
-
-    /**
-     * Register an [InitiatedFlowFactory], to control relationship between initiating and receiving flow classes
-     * explicitly on a node-by-node basis. This is used when we want to manually specify that a particular initiating
-     * flow class will have a particular responder.
-     *
-     * An [ResponderFlowFactory] is responsible for converting a [FlowSession] into the [FlowLogic] that will respond
-     * to the initiated flow. The registry records one responder type, and hence one factory, for each initiator flow
-     * type. If a factory is already registered for the type, it is overwritten in the registry when a new factory is
-     * registered.
-     *
-     * Note that this change affects _only_ the node on which this method is called, and not the entire network.
-     *
-     * @property initiatingFlowClass The [FlowLogic]-inheriting class to register a new responder for.
-     * @property flowFactory The flow factory that will create the responding flow.
-     * @property responderFlowClass The class of the responder flow.
-     * @return A [CordaFuture] that will complete the first time the responding flow is created.
-     */
-    fun <F : FlowLogic<*>> registerResponderFlow(initiatingFlowClass: Class<out FlowLogic<*>>,
-                                                 flowFactory: ResponderFlowFactory<F>,
-                                                 responderFlowClass: Class<F>): CordaFuture<F> =
-
-            node.registerInitiatedFlow(initiatingFlowClass, responderFlowClass).toFuture()
 }
-
-/**
- * Responsible for converting a [FlowSession] into the [FlowLogic] that will respond to an initiated flow.
- *
- * @param F The [FlowLogic]-inherited type of the responder class this factory creates.
- */
-@FunctionalInterface
-interface ResponderFlowFactory<F : FlowLogic<*>> {
-    /**
-     * Given the provided [FlowSession], create a responder [FlowLogic] of the desired type.
-     *
-     * @param flowSession The [FlowSession] to use to create the responder flow object.
-     * @return The constructed responder flow object.
-     */
-    fun invoke(flowSession: FlowSession): F
-}
-
-/**
- * Kotlin-only utility function using a reified type parameter and a lambda parameter to simplify the
- * [InitiatedFlowFactory.registerFlowFactory] function.
- *
- * @param F The [FlowLogic]-inherited type of the responder to register.
- * @property initiatingFlowClass The [FlowLogic]-inheriting class to register a new responder for.
- * @property flowFactory A lambda converting a [FlowSession] into an instance of the responder class [F].
- * @return A [CordaFuture] that will complete the first time the responding flow is created.
- */
-inline fun <reified F : FlowLogic<*>> StartedMockNode.registerResponderFlow(
-        initiatingFlowClass: Class<out FlowLogic<*>>,
-        noinline flowFactory: (FlowSession) -> F): Future<F> = registerResponderFlow(
-        initiatingFlowClass,
-        object : ResponderFlowFactory<F> {
-            override fun invoke(flowSession: FlowSession) = flowFactory(flowSession)
-        },
-        F::class.java)
 
 /**
  * A mock node brings up a suite of in-memory services in a fast manner suitable for unit testing.
@@ -259,16 +261,12 @@ inline fun <reified F : FlowLogic<*>> StartedMockNode.registerResponderFlow(
  * method. If you want messages to flow automatically, use automatic pumping with a thread per node but watch out
  * for code running parallel to your unit tests: you will need to use futures correctly to ensure race-free results.
  *
- * You can get a printout of every message sent by using code like:
- *
- *    LogHelper.setLevel("+messages")
- *
  * By default a single notary node is automatically started, which forms part of the network parameters for all the nodes.
  * This node is available by calling [defaultNotaryNode].
  *
+ * @property defaultParameters The default parameters for the network. If any of the remaining constructor parameters are specified then
+ * their values are taken instead of the corresponding value in [defaultParameters].
  * @property cordappPackages A [List] of cordapp packages to scan for any cordapp code, e.g. contract verification code, flows and services.
- * @property defaultParameters A [MockNetworkParameters] object which contains the same parameters as the constructor, provided
- * as a convenience for Java users.
  * @property networkSendManuallyPumped If false then messages will not be routed from sender to receiver until you use
  * the [MockNetwork.runNetwork] method. This is useful for writing single-threaded unit test code that can examine the
  * state of the mock network before and after a message is sent, without races and without the receiving node immediately
@@ -282,33 +280,38 @@ inline fun <reified F : FlowLogic<*>> StartedMockNode.registerResponderFlow(
  * @property notarySpecs The notaries to use in the mock network. By default you get one mock notary and that is usually sufficient.
  * @property networkParameters The network parameters to be used by all the nodes. [NetworkParameters.notaries] must be
  * empty as notaries are defined by [notarySpecs].
- * @property cordappsForAllNodes [TestCordapp]s that will be added to each node started by the [MockNetwork].
  */
 @Suppress("MemberVisibilityCanBePrivate", "CanBeParameter")
 open class MockNetwork(
+        @Deprecated("cordappPackages does not preserve the original CorDapp's versioning and metadata, which may lead to " +
+                "misleading results in tests. Use MockNetworkParameters.cordappsForAllNodes instead.")
         val cordappPackages: List<String>,
         val defaultParameters: MockNetworkParameters = MockNetworkParameters(),
         val networkSendManuallyPumped: Boolean = defaultParameters.networkSendManuallyPumped,
         val threadPerNode: Boolean = defaultParameters.threadPerNode,
         val servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy = defaultParameters.servicePeerAllocationStrategy,
         val notarySpecs: List<MockNetworkNotarySpec> = defaultParameters.notarySpecs,
-        val networkParameters: NetworkParameters = defaultParameters.networkParameters,
-        val cordappsForAllNodes: Collection<TestCordapp> = cordappsForPackages(cordappPackages)) {
-
+        val networkParameters: NetworkParameters = defaultParameters.networkParameters
+) {
+    @Deprecated("cordappPackages does not preserve the original CorDapp's versioning and metadata, which may lead to " +
+            "misleading results in tests. Use MockNetworkParameters.cordappsForAllNodes instead.")
     @JvmOverloads
-    constructor(cordappPackages: List<String>, parameters: MockNetworkParameters = MockNetworkParameters()) : this(cordappPackages, defaultParameters = parameters)
+    constructor(cordappPackages: List<String>, parameters: MockNetworkParameters = MockNetworkParameters()) : this(
+            cordappPackages, defaultParameters = parameters
+    )
 
-    constructor(
-            cordappPackages: List<String>,
-            defaultParameters: MockNetworkParameters = MockNetworkParameters(),
-            networkSendManuallyPumped: Boolean = defaultParameters.networkSendManuallyPumped,
-            threadPerNode: Boolean = defaultParameters.threadPerNode,
-            servicePeerAllocationStrategy: InMemoryMessagingNetwork.ServicePeerAllocationStrategy = defaultParameters.servicePeerAllocationStrategy,
-            notarySpecs: List<MockNetworkNotarySpec> = defaultParameters.notarySpecs,
-            networkParameters: NetworkParameters = defaultParameters.networkParameters
-    ) : this(emptyList(), defaultParameters, networkSendManuallyPumped, threadPerNode, servicePeerAllocationStrategy, notarySpecs, networkParameters, cordappsForAllNodes = cordappsForPackages(cordappPackages))
+    constructor(parameters: MockNetworkParameters) : this(emptyList(), defaultParameters = parameters)
 
-    private val internalMockNetwork: InternalMockNetwork = InternalMockNetwork(defaultParameters, networkSendManuallyPumped, threadPerNode, servicePeerAllocationStrategy, notarySpecs, initialNetworkParameters = networkParameters, cordappsForAllNodes = cordappsForAllNodes)
+    private val internalMockNetwork = InternalMockNetwork(
+            cordappPackages,
+            defaultParameters,
+            networkSendManuallyPumped,
+            threadPerNode,
+            servicePeerAllocationStrategy,
+            notarySpecs,
+            initialNetworkParameters = networkParameters,
+            cordappsForAllNodes = uncheckedCast(defaultParameters.cordappsForAllNodes)
+    )
 
     /** In a mock network, nodes have an incrementing integer ID. Real networks do not have this. Returns the next ID that will be used. */
     val nextNodeId get(): Int = internalMockNetwork.nextNodeId
@@ -334,7 +337,7 @@ open class MockNetwork(
     fun createPartyNode(legalName: CordaX500Name? = null): StartedMockNode = StartedMockNode.create(internalMockNetwork.createPartyNode(legalName))
 
     /** Create a started node with the given parameters. **/
-    fun createNode(parameters: MockNodeParameters = MockNodeParameters()): StartedMockNode {
+    fun createNode(parameters: MockNodeParameters): StartedMockNode {
         return StartedMockNode.create(internalMockNetwork.createNode(InternalMockNodeParameters(parameters)))
     }
 
@@ -346,58 +349,18 @@ open class MockNetwork(
      * @param entropyRoot The initial entropy value to use when generating keys. Defaults to an (insecure) random value,
      * but can be overridden to cause nodes to have stable or colliding identity/service keys.
      * @param configOverrides Add/override the default configuration/behaviour of the node
-     * @param extraCordappPackages Extra CorDapp packages to add for this node.
      */
     @JvmOverloads
     fun createNode(legalName: CordaX500Name? = null,
                    forcedID: Int? = null,
                    entropyRoot: BigInteger = BigInteger.valueOf(random63BitValue()),
-                   configOverrides: MockNodeConfigOverrides? = null,
-                   extraCordappPackages: List<String> = emptyList()): StartedMockNode {
-
-        return createNode(legalName, forcedID, entropyRoot, configOverrides, cordappsForPackages(extraCordappPackages))
-    }
-
-    /**
-     * Create a started node with the given parameters.
-     *
-     * @param legalName The node's legal name.
-     * @param forcedID A unique identifier for the node.
-     * @param entropyRoot The initial entropy value to use when generating keys. Defaults to an (insecure) random value,
-     * but can be overridden to cause nodes to have stable or colliding identity/service keys.
-     * @param configOverrides Add/override behaviour of the [NodeConfiguration] mock object.
-     * @param additionalCordapps Additional [TestCordapp]s that this node will have available, in addition to the ones common to all nodes managed by the [MockNetwork].
-     */
-    fun createNode(legalName: CordaX500Name? = null,
-                   forcedID: Int? = null,
-                   entropyRoot: BigInteger = BigInteger.valueOf(random63BitValue()),
-                   configOverrides: MockNodeConfigOverrides? = null,
-                   additionalCordapps: Collection<TestCordapp>): StartedMockNode {
-        val parameters = MockNodeParameters(forcedID, legalName, entropyRoot, configOverrides, additionalCordapps)
-        return StartedMockNode.create(internalMockNetwork.createNode(InternalMockNodeParameters(parameters)))
+                   configOverrides: MockNodeConfigOverrides? = null): StartedMockNode {
+        return createNode(MockNodeParameters(forcedID, legalName, entropyRoot, configOverrides))
     }
 
     /** Create an unstarted node with the given parameters. **/
-    fun createUnstartedNode(parameters: MockNodeParameters = MockNodeParameters()): UnstartedMockNode = UnstartedMockNode.create(internalMockNetwork.createUnstartedNode(InternalMockNodeParameters(parameters)))
-
-    /**
-     * Create an unstarted node with the given parameters.
-     *
-     * @param legalName The node's legal name.
-     * @param forcedID A unique identifier for the node.
-     * @param entropyRoot The initial entropy value to use when generating keys. Defaults to an (insecure) random value,
-     * but can be overridden to cause nodes to have stable or colliding identity/service keys.
-     * @param configOverrides Add/override behaviour of the [NodeConfiguration] mock object.
-     * @param extraCordappPackages Extra CorDapp packages to add for this node.
-     */
-    @JvmOverloads
-    fun createUnstartedNode(legalName: CordaX500Name? = null,
-                            forcedID: Int? = null,
-                            entropyRoot: BigInteger = BigInteger.valueOf(random63BitValue()),
-                            configOverrides: MockNodeConfigOverrides? = null,
-                            extraCordappPackages: List<String> = emptyList()): UnstartedMockNode {
-
-        return createUnstartedNode(legalName, forcedID, entropyRoot, configOverrides, cordappsForPackages(extraCordappPackages))
+    fun createUnstartedNode(parameters: MockNodeParameters = MockNodeParameters()): UnstartedMockNode {
+        return UnstartedMockNode.create(internalMockNetwork.createUnstartedNode(InternalMockNodeParameters(parameters)))
     }
 
     /**
@@ -408,15 +371,13 @@ open class MockNetwork(
      * @param entropyRoot The initial entropy value to use when generating keys. Defaults to an (insecure) random value,
      * but can be overridden to cause nodes to have stable or colliding identity/service keys.
      * @param configOverrides Add/override behaviour of the [NodeConfiguration] mock object.
-     * @param additionalCordapps Additional [TestCordapp]s that this node will have available, in addition to the ones common to all nodes managed by the [MockNetwork].
      */
+    @JvmOverloads
     fun createUnstartedNode(legalName: CordaX500Name? = null,
                             forcedID: Int? = null,
                             entropyRoot: BigInteger = BigInteger.valueOf(random63BitValue()),
-                            configOverrides: MockNodeConfigOverrides? = null,
-                            additionalCordapps: Collection<TestCordapp>): UnstartedMockNode {
-        val parameters = MockNodeParameters(forcedID, legalName, entropyRoot, configOverrides, additionalCordapps)
-        return UnstartedMockNode.create(internalMockNetwork.createUnstartedNode(InternalMockNodeParameters(parameters)))
+                            configOverrides: MockNodeConfigOverrides? = null): UnstartedMockNode {
+        return createUnstartedNode(MockNodeParameters(forcedID, legalName, entropyRoot, configOverrides))
     }
 
     /** Start all nodes that aren't already started. **/

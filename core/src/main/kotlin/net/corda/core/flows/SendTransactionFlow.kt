@@ -3,9 +3,7 @@ package net.corda.core.flows
 import co.paralleluniverse.fibers.Suspendable
 import net.corda.core.contracts.StateAndRef
 import net.corda.core.crypto.SecureHash
-import net.corda.core.internal.FetchDataFlow
-import net.corda.core.internal.readFully
-import net.corda.core.serialization.CordaSerializable
+import net.corda.core.internal.*
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.unwrap
 
@@ -42,7 +40,7 @@ open class DataVendingFlow(val otherSideSession: FlowSession, val payload: Any) 
 
     @Suspendable
     override fun call(): Void? {
-        // The first payload will be the transaction data, subsequent payload will be the transaction/attachment data.
+        // The first payload will be the transaction data, subsequent payload will be the transaction/attachment/network parameters data.
         var payload = payload
 
         // Depending on who called this flow, the type of the initial payload is different.
@@ -93,6 +91,10 @@ open class DataVendingFlow(val otherSideSession: FlowSession, val payload: Any) 
                     serviceHub.attachments.openAttachment(it)?.open()?.readFully()
                             ?: throw FetchDataFlow.HashNotFound(it)
                 }
+                FetchDataFlow.DataType.PARAMETERS -> dataRequest.hashes.map {
+                    (serviceHub.networkParametersService as NetworkParametersStorage).lookupSigned(it)
+                            ?: throw FetchDataFlow.MissingNetworkParameters(it)
+                }
             }
         }
     }
@@ -115,11 +117,3 @@ open class DataVendingFlow(val otherSideSession: FlowSession, val payload: Any) 
         }
     }
 }
-
-/**
- * This is a wildcard payload to be used by the invoker of the [DataVendingFlow] to allow unlimited access to its vault.
- *
- * TODO Fails with a serialization exception if it is not a list. Why?
- */
-@CordaSerializable
-object RetrieveAnyTransactionPayload : ArrayList<Any>()

@@ -1,5 +1,5 @@
-Deploying a node
-================
+Deploying a node to a server
+============================
 
 .. contents::
 
@@ -14,7 +14,7 @@ handling, and ensures the Corda service is run at boot.
 
 **Prerequisites**:
 
-   * Oracle Java 8. The supported versions are listed in :doc:`getting-set-up`
+   * A supported Java distribution. The supported versions are listed in :doc:`getting-set-up`
 
 1. As root/sys admin user - add a system user which will be used to run Corda:
 
@@ -26,28 +26,30 @@ handling, and ensures the Corda service is run at boot.
    ``mkdir /opt/corda; chown corda:corda /opt/corda``
 
 3. Download the `Corda jar <https://r3.bintray.com/corda/net/corda/corda/>`_
-   (under ``/VERSION_NUMBER/corda-VERSION_NUMBER.jar``) and place it in ``/opt/corda``
+   (under ``/|corda_version|/corda-|corda_version|.jar``) and place it in ``/opt/corda``
 
 4. (Optional) Download the `Corda webserver jar <http://r3.bintray.com/corda/net/corda/corda-webserver/>`_
-   (under ``/VERSION_NUMBER/corda-VERSION_NUMBER.jar``) and place it in ``/opt/corda``
+   (under ``/|corda_version|/corda-|corda_version|.jar``) and place it in ``/opt/corda``
 
 5. Create a directory called ``cordapps`` in ``/opt/corda`` and save your CorDapp jar file to it. Alternatively, download one of
    our `sample CorDapps <https://www.corda.net/samples/>`_ to the ``cordapps`` directory
 
-6. Save the below as ``/opt/corda/node.conf``. See :doc:`corda-configuration-file` for a description of these options::
+6. Save the below as ``/opt/corda/node.conf``. See :doc:`corda-configuration-file` for a description of these options:
 
-      p2pAddress : "example.com:10002"
+.. code-block:: none
+
+      p2pAddress = "example.com:10002"
       rpcSettings {
           address: "example.com:10003"
           adminAddress: "example.com:10004"
       }
-      h2port : 11000
-      emailAddress : "you@example.com"
-      myLegalName : "O=Bank of Breakfast Tea, L=London, C=GB"
-      keyStorePassword : "cordacadevpass"
-      trustStorePassword : "trustpass"
-      devMode : false
-      rpcUsers=[
+      h2port = 11000
+      emailAddress = "you@example.com"
+      myLegalName = "O=Bank of Breakfast Tea, L=London, C=GB"
+      keyStorePassword = "cordacadevpass"
+      trustStorePassword = "trustpass"
+      devMode = false
+      rpcUsers= [
           {
               user=corda
               password=portal_password
@@ -56,6 +58,7 @@ handling, and ensures the Corda service is run at boot.
               ]
           }
       ]
+      custom { jvmArgs = [ '-Xmx2048m', '-XX:+UseG1GC' ] }
 
 7. Make the following changes to ``/opt/corda/node.conf``:
 
@@ -65,13 +68,8 @@ handling, and ensures the Corda service is run at boot.
    *  Change the ports if necessary, for example if you are running multiple nodes on one server (see below).
    *  Enter an email address which will be used as an administrative contact during the registration process. This is
       only visible to the permissioning service.
-   *  Enter your node's desired legal name. This will be used during the issuance of your certificate and should rarely
-      change as it should represent the legal identity of your node.
-
-      * Organization (``O=``) should be a unique and meaningful identifier (e.g. Bank of Breakfast Tea)
-      * Location (``L=``) is your nearest city
-      * Country (``C=``) is the `ISO 3166-1 alpha-2 code <https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2>`_
-   *  Change the RPC username and password.
+   *  Enter your node's desired legal name (see :ref:`node-naming` for more details).
+   *  If required, add RPC users
 
 .. note:: Ubuntu 16.04 and most current Linux distributions use SystemD, so if you are running one of these
           distributions follow the steps marked **SystemD**. 
@@ -90,7 +88,7 @@ handling, and ensures the Corda service is run at boot.
        Type=simple
        User=corda
        WorkingDirectory=/opt/corda
-       ExecStart=/usr/bin/java -Xmx2048m -jar /opt/corda/corda.jar
+       ExecStart=/usr/bin/java -jar /opt/corda/corda.jar
        Restart=on-failure
 
        [Install]
@@ -108,14 +106,13 @@ handling, and ensures the Corda service is run at boot.
         respawn
         setuid corda
         chdir /opt/corda
-        exec java -Xmx2048m -jar /opt/corda/corda.jar
+        exec java -jar /opt/corda/corda.jar
 
 9. Make the following changes to ``corda.service`` or ``corda.conf``:
 
     * Make sure the service description is informative - particularly if you plan to run multiple nodes.
     * Change the username to the user account you want to use to run Corda. **We recommend that this user account is
       not root**
-    * Set the maximum amount of memory available to the Corda process by changing the ``-Xmx2048m`` parameter
     * **SystemD**: Make sure the ``corda.service`` file is owned by root with the correct permissions:
 
         * ``sudo chown root:root /etc/systemd/system/corda.service``
@@ -190,39 +187,41 @@ at boot, and means the Corda service stays running with no users connected to th
 
 **Prerequisites**:
 
-   * Oracle Java 8. The supported versions are listed in :doc:`getting-set-up`
+   * A supported Java distribution. The supported versions are listed in :doc:`getting-set-up`
 
-1. Create a Corda directory and download the Corda jar. Replace ``VERSION_NUMBER`` with the desired version. Here's an
-   example using PowerShell::
+1. Create a Corda directory and download the Corda jar. Here's an
+   example using PowerShell:
+
+.. code-block:: shell
 
         mkdir C:\Corda
-        wget http://jcenter.bintray.com/net/corda/corda/VERSION_NUMBER/corda-VERSION_NUMBER.jar -OutFile C:\Corda\corda.jar
+        wget http://jcenter.bintray.com/net/corda/corda/|corda_version|/corda-|corda_version|.jar -OutFile C:\Corda\corda.jar
 
 2. Create a directory called ``cordapps`` in ``C:\Corda\`` and save your CorDapp jar file to it. Alternatively,
    download one of our `sample CorDapps <https://www.corda.net/samples/>`_ to the ``cordapps`` directory
 
-3. Save the below as ``C:\Corda\node.conf``. See :doc:`corda-configuration-file` for a description of these options::
+3. Save the below as ``C:\Corda\node.conf``. See :doc:`corda-configuration-file` for a description of these options:
 
-        p2pAddress : "example.com:10002"
+.. code-block:: none
+
+        p2pAddress = "example.com:10002"
         rpcSettings {
-            address: "example.com:10003"
-            adminAddress: "example.com:10004"
+            address = "example.com:10003"
+            adminAddress = "example.com:10004"
         }
-        h2port : 11000
-        emailAddress: "you@example.com"
-        myLegalName : "O=Bank of Breakfast Tea, L=London, C=GB"
-        keyStorePassword : "cordacadevpass"
-        trustStorePassword : "trustpass"
-        devMode : false
-        rpcUsers=[
-            {
-                user=corda
-                password=portal_password
-                permissions=[
-                    ALL
-                ]
-            }
-        ]
+        h2port = 11000
+        emailAddress = "you@example.com"
+        myLegalName = "O=Bank of Breakfast Tea, L=London, C=GB"
+        keyStorePassword = "cordacadevpass"
+        trustStorePassword = "trustpass"
+        devMode = false
+        rpcSettings {
+           useSsl = false
+           standAloneBroker = false
+           address = "example.com:10003"
+           adminAddress = "example.com:10004"
+       }
+       custom { jvmArgs = [ '-Xmx2048m', '-XX:+UseG1GC' ] }
 
 4. Make the following changes to ``C:\Corda\node.conf``:
 
@@ -232,17 +231,12 @@ at boot, and means the Corda service stays running with no users connected to th
    *  Change the ports if necessary, for example if you are running multiple nodes on one server (see below).
    *  Enter an email address which will be used as an administrative contact during the registration process. This is
       only visible to the permissioning service.
-   *  Enter your node's desired legal name. This will be used during the issuance of your certificate and should rarely
-      change as it should represent the legal identity of your node.
-
-      * Organization (``O=``) should be a unique and meaningful identifier (e.g. Bank of Breakfast Tea)
-      * Location (``L=``) is your nearest city
-      * Country (``C=``) is the `ISO 3166-1 alpha-2 code <https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2>`_
-   *  Change the RPC username and password.
+   *  Enter your node's desired legal name (see :ref:`node-naming` for more details).
+   *  If required, add RPC users
 
 5. Copy the required Java keystores to the node. See :doc:`permissioning`
 
-6. Download the `NSSM service manager <nssm.cc>`_
+6. Download the `NSSM service manager <https://nssm.cc/>`_
 
 7. Unzip ``nssm-2.24\win64\nssm.exe`` to ``C:\Corda``
 
@@ -252,7 +246,6 @@ at boot, and means the Corda service stays running with no users connected to th
 
       nssm install cordanode1 C:\ProgramData\Oracle\Java\javapath\java.exe
       nssm set cordanode1 AppDirectory C:\Corda
-      nssm set cordanode1 AppParameters "-Xmx2048m -jar corda.jar --config-file=C:\corda\node.conf"
       nssm set cordanode1 AppStdout C:\Corda\service.log
       nssm set cordanode1 AppStderr C:\Corda\service.log
       nssm set cordanode1 Description Corda Node - Bank of Breakfast Tea
@@ -262,7 +255,6 @@ at boot, and means the Corda service stays running with no users connected to th
 9. Modify the batch file:
 
     * If you are installing multiple nodes, use a different service name (``cordanode1``) for each node
-    * Set the amount of Java heap memory available to this node by modifying the -Xmx argument
     * Set an informative description
 
 10. Provision the required certificates to your node. Contact the network permissioning service or see

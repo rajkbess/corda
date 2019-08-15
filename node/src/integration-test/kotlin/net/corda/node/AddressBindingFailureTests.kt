@@ -17,7 +17,7 @@ import java.net.ServerSocket
 class AddressBindingFailureTests {
 
     companion object {
-        private val portAllocation = incrementalPortAllocation(20_000)
+        private val portAllocation = incrementalPortAllocation()
     }
 
     @Test
@@ -55,7 +55,7 @@ class AddressBindingFailureTests {
 
         ServerSocket(0).use { socket ->
 
-            val address = InetSocketAddress(socket.localPort).toNetworkHostAndPort()
+            val address = InetSocketAddress("localhost", socket.localPort).toNetworkHostAndPort()
             driver(DriverParameters(startNodesInProcess = true, notarySpecs = emptyList(), inMemoryDB = false, portAllocation = portAllocation)) {
 
                 assertThatThrownBy { startNode(customOverrides = overrides(address)).getOrThrow() }.isInstanceOfSatisfying(AddressBindingException::class.java) { exception ->

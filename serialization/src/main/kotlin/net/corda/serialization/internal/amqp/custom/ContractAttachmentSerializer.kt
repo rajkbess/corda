@@ -24,11 +24,11 @@ class ContractAttachmentSerializer(factory: SerializerFactory) : CustomSerialize
         } catch (e: Exception) {
             throw MissingAttachmentsException(listOf(obj.id))
         }
-        return ContractAttachmentProxy(GeneratedAttachment(bytes), obj.contract, obj.additionalContracts, obj.uploader, obj.signerKeys, obj.version)
+        return ContractAttachmentProxy(GeneratedAttachment(bytes, obj.uploader), obj.contract, obj.additionalContracts, obj.uploader, obj.signerKeys, obj.version)
     }
 
     override fun fromProxy(proxy: ContractAttachmentProxy): ContractAttachment {
-        return ContractAttachment(proxy.attachment, proxy.contract, proxy.contracts, proxy.uploader, proxy.signers, proxy.version)
+        return ContractAttachment.create(proxy.attachment, proxy.contract, proxy.contracts, proxy.uploader, proxy.signers, proxy.version)
     }
 
     @KeepForDJVM

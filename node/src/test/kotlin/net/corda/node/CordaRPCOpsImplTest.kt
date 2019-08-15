@@ -15,6 +15,7 @@ import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.StartableByRPC
 import net.corda.core.flows.StateMachineRunId
 import net.corda.core.identity.Party
+import net.corda.core.internal.RPC_UPLOADER
 import net.corda.core.internal.uncheckedCast
 import net.corda.core.messaging.*
 import net.corda.core.node.services.StatesNotAvailableException
@@ -38,8 +39,8 @@ import net.corda.node.internal.security.RPCSecurityManagerImpl
 import net.corda.node.services.Permissions.Companion.all
 import net.corda.node.services.Permissions.Companion.invokeRpc
 import net.corda.node.services.Permissions.Companion.startFlow
-import net.corda.node.services.messaging.CURRENT_RPC_CONTEXT
-import net.corda.node.services.messaging.RpcAuthContext
+import net.corda.node.services.rpc.CURRENT_RPC_CONTEXT
+import net.corda.node.services.rpc.RpcAuthContext
 import net.corda.nodeapi.exceptions.NonRpcFlowException
 import net.corda.nodeapi.internal.config.User
 import net.corda.testing.core.ALICE_NAME
@@ -47,10 +48,10 @@ import net.corda.testing.core.expect
 import net.corda.testing.core.expectEvents
 import net.corda.testing.core.sequence
 import net.corda.testing.internal.fromUserList
+import net.corda.testing.node.internal.FINANCE_CORDAPPS
 import net.corda.testing.node.internal.InternalMockNetwork
 import net.corda.testing.node.internal.InternalMockNodeParameters
 import net.corda.testing.node.internal.TestStartedNode
-import net.corda.testing.node.internal.cordappsForPackages
 import net.corda.testing.node.testActor
 import org.apache.commons.io.IOUtils
 import org.assertj.core.api.Assertions.*
@@ -94,7 +95,7 @@ class CordaRPCOpsImplTest {
 
     @Before
     fun setup() {
-        mockNet = InternalMockNetwork(cordappsForAllNodes = cordappsForPackages("net.corda.finance"))
+        mockNet = InternalMockNetwork(cordappsForAllNodes = FINANCE_CORDAPPS)
         aliceNode = mockNet.createNode(InternalMockNodeParameters(legalName = ALICE_NAME))
         rpc = aliceNode.rpcOps
         CURRENT_RPC_CONTEXT.set(RpcAuthContext(InvocationContext.rpc(testActor()), buildSubject("TEST_USER", emptySet())))
@@ -108,7 +109,9 @@ class CordaRPCOpsImplTest {
 
     @After
     fun cleanUp() {
-        mockNet.stopNodes()
+        if (::mockNet.isInitialized) {
+            mockNet.stopNodes()
+        }
     }
 
     @Test
@@ -280,7 +283,7 @@ class CordaRPCOpsImplTest {
     }
 
     @Test
-    fun `can't upload the same attachment`() {
+    fun `cannot upload the same attachment`() {
         withPermissions(invokeRpc(CordaRPCOps::uploadAttachment), invokeRpc(CordaRPCOps::attachmentExists)) {
             val inputJar1 = Thread.currentThread().contextClassLoader.getResourceAsStream(testJar)
             val inputJar2 = Thread.currentThread().contextClassLoader.getResourceAsStream(testJar)
@@ -330,6 +333,15 @@ class CordaRPCOpsImplTest {
                     ), null
                 ).size, 1
             )
+        }
+    }
+
+    @Test
+    fun `attachment uploaded with metadata can be from a privileged user`() {
+        withPermissions(invokeRpc(CordaRPCOps::uploadAttachmentWithMetadata), invokeRpc(CordaRPCOps::attachmentExists)) {
+            val inputJar = Thread.currentThread().contextClassLoader.getResourceAsStream(testJar)
+            val secureHash = rpc.uploadAttachmentWithMetadata(inputJar, RPC_UPLOADER, "Season 1")
+            assertTrue(rpc.attachmentExists(secureHash))
         }
     }
 

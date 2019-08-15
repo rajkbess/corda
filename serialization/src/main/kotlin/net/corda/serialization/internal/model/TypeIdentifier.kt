@@ -24,7 +24,6 @@ class IncompatibleTypeIdentifierException(message: String) : NotSerializableExce
  * [TypeIdentifier] provides a family of type identifiers, together with a [prettyPrint] method for displaying them.
  */
 sealed class TypeIdentifier {
-
     /**
      * The name of the type.
      */
@@ -38,7 +37,7 @@ sealed class TypeIdentifier {
      * @throws IncompatibleTypeIdentifierException if the type identifier is incompatible with the locally-defined type
      * to which it refers.
      */
-    abstract fun getLocalType(classLoader: ClassLoader = ClassLoader.getSystemClassLoader()): Type
+    abstract fun getLocalType(classLoader: ClassLoader = systemClassLoader): Type
 
     open val erased: TypeIdentifier get() = this
 
@@ -61,6 +60,9 @@ sealed class TypeIdentifier {
         if (simplifyClassNames) split(".", "$").last() else this
 
     companion object {
+        // This method has locking.  So we memo the value here.
+        private val systemClassLoader: ClassLoader = ClassLoader.getSystemClassLoader()
+
         /**
          * Obtain the [TypeIdentifier] for an erased Java class.
          *
@@ -191,23 +193,6 @@ sealed class TypeIdentifier {
         }
     }
 
-    private class ReconstitutedParameterizedType(
-            private val _rawType: Type,
-            private val _ownerType: Type?,
-            private val _actualTypeArguments: Array<Type>) : ParameterizedType {
-        override fun getRawType(): Type = _rawType
-        override fun getOwnerType(): Type? = _ownerType
-        override fun getActualTypeArguments(): Array<Type> = _actualTypeArguments
-        override fun toString(): String = TypeIdentifier.forGenericType(this).prettyPrint(false)
-        override fun equals(other: Any?): Boolean =
-                other is ParameterizedType &&
-                        other.rawType == rawType &&
-                        other.ownerType == ownerType &&
-                        Arrays.equals(other.actualTypeArguments, actualTypeArguments)
-        override fun hashCode(): Int =
-                Arrays.hashCode(actualTypeArguments) xor Objects.hashCode(ownerType) xor Objects.hashCode(rawType)
-    }
-
     /**
      * A parameterised class such as Map<String, String> for which we have resolved type parameter values.
      *
@@ -221,7 +206,7 @@ sealed class TypeIdentifier {
 
         override fun toString() = "Parameterised(${prettyPrint()})"
         override fun getLocalType(classLoader: ClassLoader): Type {
-            val rawType = classLoader.loadClass(name)
+            val rawType = Class.forName(name, false, classLoader)
             if (rawType.typeParameters.size != parameters.size) {
                 throw IncompatibleTypeIdentifierException(
                         "Class $rawType expects ${rawType.typeParameters.size} type arguments, " +
@@ -235,10 +220,17 @@ sealed class TypeIdentifier {
     }
 }
 
+/**
+ * Take all type parameters to their upper bounds, recursively resolving type variables against the provided context.
+ */
 internal fun Type.resolveAgainst(context: Type): Type = when (this) {
     is WildcardType -> this.upperBound
+    is ReconstitutedParameterizedType -> this
     is ParameterizedType,
-    is TypeVariable<*> -> TypeToken.of(context).resolveType(this).type.upperBound
+    is TypeVariable<*> -> {
+        val resolved = TypeToken.of(context).resolveType(this).type.upperBound
+        if (resolved !is TypeVariable<*> || resolved == this) resolved else resolved.resolveAgainst(context)
+    }
     else -> this
 }
 
@@ -252,5 +244,28 @@ private val Type.upperBound: Type
             this.upperBounds.isEmpty() || this.upperBounds.size > 1 -> this
             else -> this.upperBounds[0]
         }
+        // Ignore types that we have created ourselves
+        is ReconstitutedParameterizedType -> this
+        is ParameterizedType -> ReconstitutedParameterizedType(
+                rawType,
+                ownerType,
+                actualTypeArguments.map { it.upperBound }.toTypedArray())
         else -> this
     }
+
+private class ReconstitutedParameterizedType(
+        private val _rawType: Type,
+        private val _ownerType: Type?,
+        private val _actualTypeArguments: Array<Type>) : ParameterizedType {
+    override fun getRawType(): Type = _rawType
+    override fun getOwnerType(): Type? = _ownerType
+    override fun getActualTypeArguments(): Array<Type> = _actualTypeArguments
+    override fun toString(): String = TypeIdentifier.forGenericType(this).prettyPrint(false)
+    override fun equals(other: Any?): Boolean =
+            other is ParameterizedType &&
+                    other.rawType == rawType &&
+                    other.ownerType == ownerType &&
+                    Arrays.equals(other.actualTypeArguments, actualTypeArguments)
+    override fun hashCode(): Int =
+            Arrays.hashCode(actualTypeArguments) xor Objects.hashCode(ownerType) xor Objects.hashCode(rawType)
+}

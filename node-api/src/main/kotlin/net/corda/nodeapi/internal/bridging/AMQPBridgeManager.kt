@@ -34,7 +34,9 @@ import kotlin.concurrent.withLock
  *  The Netty thread pool used by the AMQPBridges is also shared and managed by the AMQPBridgeManager.
  */
 @VisibleForTesting
-class AMQPBridgeManager(config: MutualSslConfiguration, maxMessageSize: Int,
+class AMQPBridgeManager(config: MutualSslConfiguration,
+                        maxMessageSize: Int,
+                        crlCheckSoftFail: Boolean,
                         private val artemisMessageClientFactory: () -> ArtemisSessionProvider,
                         private val bridgeMetricsService: BridgeMetricsService? = null) : BridgeManager {
 
@@ -43,15 +45,19 @@ class AMQPBridgeManager(config: MutualSslConfiguration, maxMessageSize: Int,
 
     private class AMQPConfigurationImpl private constructor(override val keyStore: CertificateStore,
                                                             override val trustStore: CertificateStore,
-                                                            override val maxMessageSize: Int) : AMQPConfiguration {
-        constructor(config: MutualSslConfiguration, maxMessageSize: Int) : this(config.keyStore.get(), config.trustStore.get(), maxMessageSize)
+                                                            override val maxMessageSize: Int,
+                                                            override val crlCheckSoftFail: Boolean) : AMQPConfiguration {
+        constructor(config: MutualSslConfiguration, maxMessageSize: Int, crlCheckSoftFail: Boolean) : this(config.keyStore.get(), config.trustStore.get(), maxMessageSize, crlCheckSoftFail)
     }
 
-    private val amqpConfig: AMQPConfiguration = AMQPConfigurationImpl(config, maxMessageSize)
+    private val amqpConfig: AMQPConfiguration = AMQPConfigurationImpl(config, maxMessageSize, crlCheckSoftFail)
     private var sharedEventLoopGroup: EventLoopGroup? = null
     private var artemis: ArtemisSessionProvider? = null
 
-    constructor(config: MutualSslConfiguration, p2pAddress: NetworkHostAndPort, maxMessageSize: Int) : this(config, maxMessageSize, { ArtemisMessagingClient(config, p2pAddress, maxMessageSize) })
+    constructor(config: MutualSslConfiguration,
+                p2pAddress: NetworkHostAndPort,
+                maxMessageSize: Int,
+                crlCheckSoftFail: Boolean) : this(config, maxMessageSize, crlCheckSoftFail, { ArtemisMessagingClient(config, p2pAddress, maxMessageSize) })
 
     companion object {
         private const val NUM_BRIDGE_THREADS = 0 // Default sized pool
@@ -158,7 +164,7 @@ class AMQPBridgeManager(config: MutualSslConfiguration, maxMessageSize: Int,
                 logWarnWithMDC(msg)
                 bridgeMetricsService?.packetDropEvent(artemisMessage, msg)
                 // Ack the message to prevent same message being sent to us again.
-                artemisMessage.acknowledge()
+                artemisMessage.individualAcknowledge()
                 return
             }
             val data = ByteArray(artemisMessage.bodySize).apply { artemisMessage.bodyBuffer.readBytes(this) }
@@ -181,7 +187,7 @@ class AMQPBridgeManager(config: MutualSslConfiguration, maxMessageSize: Int,
                 logDebugWithMDC { "Bridge ACK ${sendableMessage.onComplete.get()}" }
                 lock.withLock {
                     if (sendableMessage.onComplete.get() == MessageStatus.Acknowledged) {
-                        artemisMessage.acknowledge()
+                        artemisMessage.individualAcknowledge()
                     } else {
                         logInfoWithMDC("Rollback rejected message uuid: ${artemisMessage.getObjectProperty("_AMQ_DUPL_ID")}")
                         // We need to commit any acknowledged messages before rolling back the failed
@@ -191,7 +197,18 @@ class AMQPBridgeManager(config: MutualSslConfiguration, maxMessageSize: Int,
                     }
                 }
             }
-            amqpClient.write(sendableMessage)
+            try {
+                amqpClient.write(sendableMessage)
+            } catch (ex: IllegalStateException) {
+                // Attempting to send a message while the AMQP client is disconnected may cause message loss.
+                // The failed message is rolled back after committing acknowledged messages.
+                lock.withLock {
+                    ex.message?.let { logInfoWithMDC(it)}
+                    logInfoWithMDC("Rollback rejected message uuid: ${artemisMessage.getObjectProperty("_AMQ_DUPL_ID")}")
+                    session?.commit()
+                    session?.rollback(false)
+                }
+            }
             bridgeMetricsService?.packetAcceptedEvent(sendableMessage)
         }
     }

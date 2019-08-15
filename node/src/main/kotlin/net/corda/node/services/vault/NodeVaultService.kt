@@ -20,10 +20,7 @@ import net.corda.node.services.api.SchemaService
 import net.corda.node.services.api.VaultServiceInternal
 import net.corda.node.services.schema.PersistentStateService
 import net.corda.node.services.statemachine.FlowStateMachineImpl
-import net.corda.nodeapi.internal.persistence.CordaPersistence
-import net.corda.nodeapi.internal.persistence.bufferUntilDatabaseCommit
-import net.corda.nodeapi.internal.persistence.currentDBSession
-import net.corda.nodeapi.internal.persistence.wrapWithDatabaseTransaction
+import net.corda.nodeapi.internal.persistence.*
 import org.hibernate.Session
 import rx.Observable
 import rx.subjects.PublishSubject
@@ -56,10 +53,25 @@ class NodeVaultService(
         private val keyManagementService: KeyManagementService,
         private val servicesForResolution: ServicesForResolution,
         private val database: CordaPersistence,
-        private val schemaService: SchemaService
+        private val schemaService: SchemaService,
+        private val appClassloader: ClassLoader
 ) : SingletonSerializeAsToken(), VaultServiceInternal {
-    private companion object {
+    companion object {
         private val log = contextLogger()
+
+        /**
+         * Establish whether a given state is relevant to a node, given the node's public keys.
+         *
+         * A state is relevant if any of the participants (or the owner for ownable states) has an owning key matching one of this node's
+         * public keys.
+         */
+        fun isRelevant(state: ContractState, myKeys: Set<PublicKey>): Boolean {
+            val keysToCheck = when (state) {
+                is OwnableState -> listOf(state.owner.owningKey)
+                else -> state.participants.map { it.owningKey }
+            }
+            return keysToCheck.any { it.containsAny(myKeys) }
+        }
     }
 
     private class InnerState {
@@ -79,12 +91,12 @@ class NodeVaultService(
      * Maintain a list of contract state interfaces to concrete types stored in the vault
      * for usage in generic queries of type queryBy<LinearState> or queryBy<FungibleState<*>>
      */
-    private val contractStateTypeMappings = mutableMapOf<String, MutableSet<String>>()
+    private val contractStateTypeMappings = mutableMapOf<String, MutableSet<String>>().toSynchronised()
 
     override fun start() {
         bootstrapContractStateTypes()
         rawUpdates.subscribe { update ->
-            update.produced.forEach {
+            (update.produced + update.references).forEach {
                 val concreteType = it.state.data.javaClass
                 log.trace { "State update of type: $concreteType" }
                 val seen = contractStateTypeMappings.any { it.value.contains(concreteType.name) }
@@ -99,73 +111,92 @@ class NodeVaultService(
         }
     }
 
-    private fun recordUpdate(update: Vault.Update<ContractState>): Vault.Update<ContractState> {
+    private fun saveStates(session: Session, states: Map<StateRef, StateAndRef<ContractState>>) {
+        states.forEach { stateAndRef ->
+            val stateOnly = stateAndRef.value.state.data
+            // TODO: Optimise this.
+            //
+            // For EVERY state to be committed to the vault, this checks whether it is spendable by the recording
+            // node. The behaviour is as follows:
+            //
+            // 1) All vault updates marked as RELEVANT will, of course, all have relevancy_status = 1 in the
+            //    "vault_states" table.
+            // 2) For ALL_VISIBLE updates, those which are not relevant according to the relevancy rules will have
+            //    relevancy_status = 0 in the "vault_states" table.
+            //
+            // This is useful when it comes to querying for fungible states, when we do not want irrelevant states
+            // included in the result.
+            //
+            // The same functionality could be obtained by passing in a list of participants to the vault query,
+            // however this:
+            //
+            // * requires a join on the participants table which results in slow queries
+            // * states may flip from being non-relevant to relevant
+            // * it's more complicated for CorDapp developers
+            //
+            // Adding a new column in the "VaultStates" table was considered the best approach.
+            val keys = stateOnly.participants.map { it.owningKey }
+            val persistentStateRef = PersistentStateRef(stateAndRef.key)
+            // This check is done to set the "relevancyStatus". When one performs a vault query, it is possible to return ALL states, ONLY
+            // RELEVANT states or NOT relevant states.
+            val isRelevant = isRelevant(stateOnly, keyManagementService.filterMyKeys(keys).toSet())
+            val constraintInfo = Vault.ConstraintInfo(stateAndRef.value.state.constraint)
+            // Save a row for each party in the state_party table.
+            // TODO: Perhaps these can be stored in a batch?
+            stateOnly.participants.groupBy { it.owningKey }.forEach { participants ->
+                val persistentParty = VaultSchemaV1.PersistentParty(persistentStateRef, participants.value.first())
+                session.save(persistentParty)
+            }
+            val stateToAdd = VaultSchemaV1.VaultStates(
+                    notary = stateAndRef.value.state.notary,
+                    contractStateClassName = stateAndRef.value.state.data.javaClass.name,
+                    stateStatus = Vault.StateStatus.UNCONSUMED,
+                    recordedTime = clock.instant(),
+                    relevancyStatus = if (isRelevant) Vault.RelevancyStatus.RELEVANT else Vault.RelevancyStatus.NOT_RELEVANT,
+                    constraintType = constraintInfo.type(),
+                    constraintData = constraintInfo.data()
+            )
+            stateToAdd.stateRef = persistentStateRef
+            session.save(stateToAdd)
+        }
+    }
+
+    private fun recordUpdate(update: Vault.Update<ContractState>, previouslySeen: Boolean): Vault.Update<ContractState> {
         if (!update.isEmpty()) {
             val producedStateRefs = update.produced.map { it.ref }
             val producedStateRefsMap = update.produced.associateBy { it.ref }
             val consumedStateRefs = update.consumed.map { it.ref }
+            val referenceStateRefsMap = update.references.associateBy { it.ref }
             log.trace { "Removing $consumedStateRefs consumed contract states and adding $producedStateRefs produced contract states to the database." }
 
             val session = currentDBSession()
-            producedStateRefsMap.forEach { stateAndRef ->
-                val stateOnly = stateAndRef.value.state.data
-                // TODO: Optimise this.
-                //
-                // For EVERY state to be committed to the vault, this checks whether it is spendable by the recording
-                // node. The behaviour is as follows:
-                //
-                // 1) All vault updates marked as RELEVANT will, of course, all have relevancy_status = 1 in the
-                //    "vault_states" table.
-                // 2) For ALL_VISIBLE updates, those which are not relevant according to the relevancy rules will have
-                //    relevancy_status = 0 in the "vault_states" table.
-                //
-                // This is useful when it comes to querying for fungible states, when we do not want irrelevant states
-                // included in the result.
-                //
-                // The same functionality could be obtained by passing in a list of participants to the vault query,
-                // however this:
-                //
-                // * requires a join on the participants table which results in slow queries
-                // * states may flip from being non-relevant to relevant
-                // * it's more complicated for CorDapp developers
-                //
-                // Adding a new column in the "VaultStates" table was considered the best approach.
-                val keys = stateOnly.participants.map { it.owningKey }
-                val persistentStateRef = PersistentStateRef(stateAndRef.key)
-                val isRelevant = isRelevant(stateOnly, keyManagementService.filterMyKeys(keys).toSet())
-                val constraintInfo = Vault.ConstraintInfo(stateAndRef.value.state.constraint)
-                // Save a row for each party in the state_party table.
-                // TODO: Perhaps these can be stored in a batch?
-                stateOnly.participants.forEach { participant ->
-                    val persistentParty = VaultSchemaV1.PersistentParty(persistentStateRef, participant)
-                    session.save(persistentParty)
-                }
-                val stateToAdd = VaultSchemaV1.VaultStates(
-                        notary = stateAndRef.value.state.notary,
-                        contractStateClassName = stateAndRef.value.state.data.javaClass.name,
-                        stateStatus = Vault.StateStatus.UNCONSUMED,
-                        recordedTime = clock.instant(),
-                        relevancyStatus = if (isRelevant) Vault.RelevancyStatus.RELEVANT else Vault.RelevancyStatus.NOT_RELEVANT,
-                        constraintType = constraintInfo.type(),
-                        constraintData = constraintInfo.data()
-                )
-                stateToAdd.stateRef = persistentStateRef
-                session.save(stateToAdd)
-            }
+
+            // Persist the outputs.
+            saveStates(session, producedStateRefsMap)
+
+            // Persist the reference states.
+            saveStates(session, referenceStateRefsMap)
+
+            // Persist the consumed inputs.
             consumedStateRefs.forEach { stateRef ->
                 val state = session.get<VaultSchemaV1.VaultStates>(VaultSchemaV1.VaultStates::class.java, PersistentStateRef(stateRef))
                 state?.run {
-                    stateStatus = Vault.StateStatus.CONSUMED
-                    consumedTime = clock.instant()
-                    // remove lock (if held)
-                    if (lockId != null) {
-                        lockId = null
-                        lockUpdateTime = clock.instant()
-                        log.trace("Releasing soft lock on consumed state: $stateRef")
+                    // Only update the state if it has not previously been consumed (this could have happened if the transaction is being
+                    // re-recorded.
+                    if (stateStatus != Vault.StateStatus.CONSUMED) {
+                        stateStatus = Vault.StateStatus.CONSUMED
+                        consumedTime = clock.instant()
+                        // remove lock (if held)
+                        if (lockId != null) {
+                            lockId = null
+                            lockUpdateTime = clock.instant()
+                            log.trace("Releasing soft lock on consumed state: $stateRef")
+                        }
+                        session.save(state)
                     }
-                    session.save(state)
                 }
             }
+
         }
         return update
     }
@@ -177,45 +208,101 @@ class NodeVaultService(
         get() = mutex.locked { _updatesInDbTx }
 
     /** Groups adjacent transactions into batches to generate separate net updates per transaction type. */
-    override fun notifyAll(statesToRecord: StatesToRecord, txns: Iterable<CoreTransaction>) {
-        if (statesToRecord == StatesToRecord.NONE || !txns.any()) return
+    override fun notifyAll(statesToRecord: StatesToRecord, txns: Iterable<CoreTransaction>, previouslySeenTxns: Iterable<CoreTransaction>) {
+        if (statesToRecord == StatesToRecord.NONE || (!txns.any() && !previouslySeenTxns.any()))  return
         val batch = mutableListOf<CoreTransaction>()
 
-        fun flushBatch() {
-            val updates = makeUpdates(batch, statesToRecord)
-            processAndNotify(updates)
+        fun flushBatch(previouslySeen: Boolean) {
+            val updates = makeUpdates(batch, statesToRecord, previouslySeen)
+            processAndNotify(updates, previouslySeen)
             batch.clear()
         }
-
-        for (tx in txns) {
-            if (batch.isNotEmpty() && tx.javaClass != batch.last().javaClass) {
-                flushBatch()
+        fun processTransactions(txs: Iterable<CoreTransaction>, previouslySeen: Boolean) {
+            for (tx in txs) {
+                if (batch.isNotEmpty() && tx.javaClass != batch.last().javaClass) {
+                    flushBatch(previouslySeen)
+                }
+                batch.add(tx)
             }
-            batch.add(tx)
+            flushBatch(previouslySeen)
         }
-        flushBatch()
+
+        processTransactions(previouslySeenTxns, true)
+        processTransactions(txns, false)
     }
 
-    private fun makeUpdates(batch: Iterable<CoreTransaction>, statesToRecord: StatesToRecord): List<Vault.Update<ContractState>> {
+    private fun makeUpdates(batch: Iterable<CoreTransaction>, statesToRecord: StatesToRecord, previouslySeen: Boolean): List<Vault.Update<ContractState>> {
+
+        fun <T> withValidDeserialization(list: List<T>, txId: SecureHash): Map<Int, T> = (0 until list.size).mapNotNull { idx ->
+            try {
+                idx to list[idx]
+            } catch (e: TransactionDeserialisationException) {
+                // When resolving transaction dependencies we might encounter contracts we haven't installed locally.
+                // This will cause a failure as we can't deserialize such states in the context of the `appClassloader`.
+                // For now we ignore these states.
+                // In the future we will use the AttachmentsClassloader to correctly deserialize and asses the relevancy.
+                log.debug { "Could not deserialize state $idx from transaction $txId. Cause: $e" }
+                null
+            }
+        }.toMap()
+
+        // Returns only output states that can be deserialised successfully.
+        fun WireTransaction.deserializableOutputStates(): Map<Int, TransactionState<ContractState>> = withValidDeserialization(this.outputs, this.id)
+
+        // Returns only reference states that can be deserialised successfully.
+        fun LedgerTransaction.deserializableRefStates(): Map<Int, StateAndRef<ContractState>> = withValidDeserialization(this.references, this.id)
+
         fun makeUpdate(tx: WireTransaction): Vault.Update<ContractState>? {
+            val outputs: Map<Int, TransactionState<ContractState>> = tx.deserializableOutputStates()
             val ourNewStates = when (statesToRecord) {
                 StatesToRecord.NONE -> throw AssertionError("Should not reach here")
-                StatesToRecord.ONLY_RELEVANT -> tx.outputs.withIndex().filter {
-                    isRelevant(it.value.data, keyManagementService.filterMyKeys(tx.outputs.flatMap { it.data.participants.map { it.owningKey } }).toSet())
+                StatesToRecord.ONLY_RELEVANT -> outputs.filter { (_, value) ->
+                    isRelevant(value.data, keyManagementService.filterMyKeys(outputs.values.flatMap { it.data.participants.map { it.owningKey } }).toSet())
                 }
-                StatesToRecord.ALL_VISIBLE -> tx.outputs.withIndex()
-            }.map { tx.outRef<ContractState>(it.index) }
+                StatesToRecord.ALL_VISIBLE -> if (previouslySeen) {
+                    // For transactions being re-recorded, the node must check its vault to find out what states it has already seen. Note
+                    // that some of the outputs previously seen may have been consumed in the meantime, so the check must look for all state
+                    // statuses.
+                    val outputRefs = tx.outRefsOfType<ContractState>().map { it.ref }
+                    val seenRefs = loadStates(outputRefs).map { it.ref }
+                    val unseenRefs = outputRefs - seenRefs
+                    val unseenOutputIdxs = unseenRefs.map { it.index }.toSet()
+                    outputs.filter { it.key in unseenOutputIdxs }
+                } else {
+                    outputs
+                }
+            }.map { (idx, _) -> tx.outRef<ContractState>(idx) }
 
-            // Retrieve all unconsumed states for this transaction's inputs
+            // Retrieve all unconsumed states for this transaction's inputs.
             val consumedStates = loadStates(tx.inputs)
 
-            // Is transaction irrelevant?
+            // Is transaction irrelevant? If so, then we don't care about the reference states either.
             if (consumedStates.isEmpty() && ourNewStates.isEmpty()) {
                 log.trace { "tx ${tx.id} was irrelevant to this vault, ignoring" }
                 return null
             }
 
-            return Vault.Update(consumedStates.toSet(), ourNewStates.toSet())
+            // This list should only contain NEW states which we have not seen before as an output in another transaction. If we can't
+            // obtain the references from the vault then the reference must be a state we have not seen before, therefore we should store it
+            // in the vault. If StateToRecord is set to ALL_VISIBLE or ONLY_RELEVANT then we should store all of the previously unseen
+            // states in the reference list. The assumption is that we might need to inspect them at some point if they were referred to
+            // in the contracts of the input or output states. If states to record is none then we shouldn't record any reference states.
+            val newReferenceStateAndRefs = if (tx.references.isEmpty()) {
+                emptyList()
+            } else {
+                when (statesToRecord) {
+                    StatesToRecord.NONE -> throw AssertionError("Should not reach here")
+                    StatesToRecord.ALL_VISIBLE, StatesToRecord.ONLY_RELEVANT -> {
+                        val notSeenReferences = tx.references - loadStates(tx.references).map { it.ref }
+                        // TODO: This is expensive - is there another way?
+                        tx.toLedgerTransaction(servicesForResolution).deserializableRefStates()
+                                .filter { (_, stateAndRef) -> stateAndRef.ref in notSeenReferences }
+                                .values
+                    }
+                }
+            }
+
+            return Vault.Update(consumedStates.toSet(), ourNewStates.toSet(), references = newReferenceStateAndRefs.toSet())
         }
 
         fun resolveAndMakeUpdate(tx: CoreTransaction): Vault.Update<ContractState>? {
@@ -242,12 +329,14 @@ class NodeVaultService(
                 return null
             }
 
+            val referenceStateAndRefs = ltx.references
+
             val updateType = if (tx is ContractUpgradeWireTransaction) {
                 Vault.UpdateType.CONTRACT_UPGRADE
             } else {
                 Vault.UpdateType.NOTARY_CHANGE
             }
-            return Vault.Update(consumedStateAndRefs.toSet(), producedStateAndRefs.toSet(), null, updateType)
+            return Vault.Update(consumedStateAndRefs.toSet(), producedStateAndRefs.toSet(), null, updateType, referenceStateAndRefs.toSet())
         }
 
 
@@ -264,18 +353,20 @@ class NodeVaultService(
             (0..(refsList.size - 1) / pageSize).forEach {
                 val offset = it * pageSize
                 val limit = minOf(offset + pageSize, refsList.size)
-                val page = queryBy<ContractState>(QueryCriteria.VaultQueryCriteria(stateRefs = refsList.subList(offset, limit))).states
+                val page = queryBy<ContractState>(QueryCriteria.VaultQueryCriteria(
+                        stateRefs = refsList.subList(offset, limit),
+                        status = Vault.StateStatus.ALL)).states
                 states.addAll(page)
             }
         }
         return states
     }
 
-    private fun processAndNotify(updates: List<Vault.Update<ContractState>>) {
+    private fun processAndNotify(updates: List<Vault.Update<ContractState>>, previouslySeen: Boolean) {
         if (updates.isEmpty()) return
         val netUpdate = updates.reduce { update1, update2 -> update1 + update2 }
         if (!netUpdate.isEmpty()) {
-            recordUpdate(netUpdate)
+            recordUpdate(netUpdate, previouslySeen)
             mutex.locked {
                 // flowId was required by SoftLockManager to perform auto-registration of soft locks for new states
                 val uuid = (Strand.currentStrand() as? FlowStateMachineImpl<*>)?.id?.uuid
@@ -291,7 +382,7 @@ class NodeVaultService(
                         softLockReserve(uuid, stateRefs)
                     }
                 }
-                persistentStateService.persist(vaultUpdate.produced)
+                persistentStateService.persist(vaultUpdate.produced + vaultUpdate.references)
                 updatesPublisher.onNext(vaultUpdate)
             }
         }
@@ -456,24 +547,26 @@ class NodeVaultService(
         return claimedStates
     }
 
-    @VisibleForTesting
-    internal fun isRelevant(state: ContractState, myKeys: Set<PublicKey>): Boolean {
-        val keysToCheck = when (state) {
-        // Sometimes developers forget to add the owning key to participants for OwnableStates.
-        // TODO: This logic should probably be moved to OwnableState so we can just do a simple intersection here.
-            is OwnableState -> (state.participants.map { it.owningKey } + state.owner.owningKey).toSet()
-            else -> state.participants.map { it.owningKey }
-        }
-        return keysToCheck.any { it.containsAny(myKeys) }
-    }
-
     @Throws(VaultQueryException::class)
     override fun <T : ContractState> _queryBy(criteria: QueryCriteria, paging: PageSpecification, sorting: Sort, contractStateType: Class<out T>): Vault.Page<T> {
-        return _queryBy(criteria, paging, sorting, contractStateType, false)
+        try {
+            return _queryBy(criteria, paging, sorting, contractStateType, false)
+        } catch (e: VaultQueryException) {
+            throw e
+        } catch (e: Exception) {
+            throw VaultQueryException("An error occurred while attempting to query the vault: ${e.message}", e)
+        }
     }
 
     @Throws(VaultQueryException::class)
-    private fun <T : ContractState> _queryBy(criteria: QueryCriteria, paging: PageSpecification, sorting: Sort, contractStateType: Class<out T>, skipPagingChecks: Boolean): Vault.Page<T> {
+    private fun <T : ContractState> _queryBy(criteria: QueryCriteria, paging_: PageSpecification, sorting: Sort, contractStateType: Class<out T>, skipPagingChecks: Boolean): Vault.Page<T> {
+        // We decrement by one if the client requests MAX_PAGE_SIZE, assuming they can not notice this because they don't have enough memory
+        // to request `MAX_PAGE_SIZE` states at once.
+        val paging = if (paging_.pageSize == Integer.MAX_VALUE) {
+            paging_.copy(pageSize = Integer.MAX_VALUE - 1)
+        } else {
+            paging_
+        }
         log.debug { "Vault Query for contract type: $contractStateType, criteria: $criteria, pagination: $paging, sorting: $sorting" }
         return database.transaction {
             // calculate total results where a page specification has been defined
@@ -559,14 +652,37 @@ class NodeVaultService(
         }
     }
 
+    /**
+     * Returns a [DataFeed] containing the results of the provided query, along with the associated observable, containing any subsequent updates.
+     *
+     * Note that this method can be invoked concurrently with [NodeVaultService.notifyAll], which means there could be race conditions between reads
+     * performed here and writes performed there. These are prevented, using the following approach:
+     * - Observable updates emitted by [NodeVaultService.notifyAll] are buffered until the transaction's commit point
+     *   This means that it's as if publication is performed, after the transaction is committed.
+     * - Observable updates tracked by [NodeVaultService._trackBy] are buffered before the transaction (for the provided query) is open
+     *   and until the client's subscription. So, it's as if the customer is subscribed to the observable before the read's transaction is open.
+     *
+     * The combination of the 2 conditions described above guarantee that there can be no possible interleaving, where some states are not observed in the query
+     * (i.e. because read transaction opens, before write transaction is closed) and at the same time not included in the observable (i.e. because subscription
+     * is done before the publication of updates). However, this guarantee cannot be provided, in cases where the client invokes [VaultService.trackBy] with an open
+     * transaction.
+     */
     @Throws(VaultQueryException::class)
     override fun <T : ContractState> _trackBy(criteria: QueryCriteria, paging: PageSpecification, sorting: Sort, contractStateType: Class<out T>): DataFeed<Vault.Page<T>, Vault.Update<T>> {
         return mutex.locked {
+            val updates: Observable<Vault.Update<T>> = uncheckedCast(_updatesPublisher.bufferUntilSubscribed())
+            if (contextTransactionOrNull != null) {
+                log.warn("trackBy is called with an already existing, open DB transaction. As a result, there might be states missing from both the snapshot and observable, included in the returned data feed, because of race conditions.")
+            }
             val snapshotResults = _queryBy(criteria, paging, sorting, contractStateType)
-            val updates: Observable<Vault.Update<T>> = uncheckedCast(_updatesPublisher.bufferUntilSubscribed()
-                    .filter { it.containsType(contractStateType, snapshotResults.stateTypes) }
-                    .map { filterContractStates(it, contractStateType) })
-            DataFeed(snapshotResults, updates)
+            val snapshotStatesRefs = snapshotResults.statesMetadata.map { it.ref }.toSet()
+            val snapshotConsumedStatesRefs = snapshotResults.statesMetadata.filter { it.consumedTime != null }
+                    .map { it.ref }.toSet()
+            val filteredUpdates = updates.filter { it.containsType(contractStateType, snapshotResults.stateTypes) }
+                    .map { filterContractStates(it, contractStateType) }
+                    .filter { !hasBeenSeen(it, snapshotStatesRefs, snapshotConsumedStatesRefs) }
+
+            DataFeed(snapshotResults, filteredUpdates)
         }
     }
 
@@ -576,6 +692,25 @@ class NodeVaultService(
 
     private fun <T : ContractState> filterByContractState(contractStateType: Class<out T>, stateAndRefs: Set<StateAndRef<T>>) =
             stateAndRefs.filter { contractStateType.isAssignableFrom(it.state.data.javaClass) }.toSet()
+
+    /**
+     * Filters out updates that have been seen, aka being reflected in the query's result snapshot.
+     *
+     * An update is reflected in the snapshot, if both of the following conditions hold:
+     * - all the states produced by the update are included in the snapshot (regardless of whether they are consumed).
+     * - all the states consumed by the update are included in the snapshot, AND they are consumed.
+     *
+     * Note: An update can contain multiple transactions (with netting performed on them). As a result, some of these transactions
+     *       can be included in the snapshot result, while some are not. In this case, since we are not capable of reverting the netting and doing
+     *       partial exclusion, we decide to return some more updates, instead of losing them completely (not returning them either in
+     *       the snapshot or in the observable).
+     */
+    private fun <T: ContractState> hasBeenSeen(update: Vault.Update<T>, snapshotStatesRefs: Set<StateRef>, snapshotConsumedStatesRefs: Set<StateRef>): Boolean {
+        val updateProducedStatesRefs = update.produced.map { it.ref }.toSet()
+        val updateConsumedStatesRefs = update.consumed.map { it.ref }.toSet()
+
+        return snapshotStatesRefs.containsAll(updateProducedStatesRefs) && snapshotConsumedStatesRefs.containsAll(updateConsumedStatesRefs)
+    }
 
     private fun getSession() = database.currentOrNew().session
     /**
@@ -594,7 +729,7 @@ class NodeVaultService(
         val unknownTypes = mutableSetOf<String>()
         distinctTypes.forEach { type ->
             val concreteType: Class<ContractState>? = try {
-                uncheckedCast(Class.forName(type))
+                uncheckedCast(Class.forName(type, true, appClassloader))
             } catch (e: ClassNotFoundException) {
                 unknownTypes += type
                 null

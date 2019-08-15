@@ -29,6 +29,7 @@ import net.corda.testing.internal.DEV_INTERMEDIATE_CA
 import net.corda.testing.internal.DEV_ROOT_CA
 import net.corda.testing.internal.rigorousMock
 import net.corda.testing.internal.stubs.CertificateStoreStubs
+import org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.asn1.x509.*
 import org.bouncycastle.cert.jcajce.JcaX509CRLConverter
@@ -62,7 +63,6 @@ import javax.ws.rs.Path
 import javax.ws.rs.Produces
 import javax.ws.rs.core.Response
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 
 class CertificateRevocationListNodeTests {
     @Rule
@@ -72,7 +72,7 @@ class CertificateRevocationListNodeTests {
     private val ROOT_CA = DEV_ROOT_CA
     private lateinit var INTERMEDIATE_CA: CertificateAndKeyPair
 
-    private val portAllocation = incrementalPortAllocation(10000)
+    private val portAllocation = incrementalPortAllocation()
     private val serverPort = portAllocation.nextPort()
 
     private lateinit var server: CrlServer
@@ -83,6 +83,9 @@ class CertificateRevocationListNodeTests {
     private abstract class AbstractNodeConfiguration : NodeConfiguration
 
     companion object {
+
+        const val FORBIDDEN_CRL = "forbidden.crl"
+
         fun createRevocationList(clrServer: CrlServer, signatureAlgorithm: String, caCertificate: X509Certificate,
                                  caPrivateKey: PrivateKey,
                                  endpoint: String,
@@ -494,6 +497,13 @@ class CertificateRevocationListNodeTests {
         }
 
         @GET
+        @Path(FORBIDDEN_CRL)
+        @Produces("application/pkcs7-crl")
+        fun getNodeSlowCRL(): Response {
+            return Response.status(Response.Status.FORBIDDEN).build()
+        }
+
+        @GET
         @Path("intermediate.crl")
         @Produces("application/pkcs7-crl")
         fun getIntermediateCRL(): Response {
@@ -577,14 +587,44 @@ class CertificateRevocationListNodeTests {
         crl.verify(ROOT_CA.keyPair.public)
 
         // Try changing the algorithm to EC will fail.
-        assertFailsWith<IllegalArgumentException>("Unknown signature type requested: EC") {
+        assertThatIllegalArgumentException().isThrownBy {
             createRevocationList(
-                server,
-                EC_ALGORITHM,
-                ROOT_CA.certificate,
-                ROOT_CA.keyPair.private,
-                EMPTY_CRL,
-                true)
+                    server,
+                    EC_ALGORITHM,
+                    ROOT_CA.certificate,
+                    ROOT_CA.keyPair.private,
+                    EMPTY_CRL,
+                    true
+            )
+        }.withMessage("Unknown signature type requested: EC")
+    }
+
+    @Test
+    fun `AMPQ Client to Server connection succeeds when CRL retrieval is forbidden and soft fail is enabled`() {
+        val crlCheckSoftFail = true
+        val forbiddenUrl = "http://${server.hostAndPort}/crl/$FORBIDDEN_CRL"
+        val (amqpServer, _) = createServer(
+                serverPort,
+                crlCheckSoftFail = crlCheckSoftFail,
+                nodeCrlDistPoint = forbiddenUrl,
+                tlsCrlDistPoint = forbiddenUrl)
+        amqpServer.use {
+            amqpServer.start()
+            amqpServer.onReceive.subscribe {
+                it.complete(true)
+            }
+            val (amqpClient, _) = createClient(
+                    serverPort,
+                    crlCheckSoftFail,
+                    nodeCrlDistPoint = forbiddenUrl,
+                    tlsCrlDistPoint = forbiddenUrl)
+            amqpClient.use {
+                val serverConnected = amqpServer.onConnection.toFuture()
+                amqpClient.onConnection.toFuture()
+                amqpClient.start()
+                val serverConnect = serverConnected.get()
+                assertEquals(true, serverConnect.connected)
+            }
         }
     }
 }
